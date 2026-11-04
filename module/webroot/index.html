@@ -1,0 +1,1706 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ColorOS 温控与云控</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --fg:#1b1c1e; --muted:#6b7076;
+    --line:#e3e6ea; --accent:#2f6fed; --danger:#d93025; --warn:#b26a00;
+    --ok:#1a7f37; --chip:#eef1f5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#111214; --card:#1b1d20; --fg:#e8eaed; --muted:#9aa0a6;
+      --line:#2c2f33; --accent:#6f9cff; --danger:#ff6b60; --warn:#e0a34a;
+      --ok:#5dd07a; --chip:#25282c;
+    }
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;
+    padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 96px);
+  }
+  h1{font-size:19px;margin:0 0 2px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:12px;overflow:hidden}
+  .card-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .card-head h2{font-size:14px;margin:0;font-weight:600;flex:1}
+  .card-head .hint{font-size:11.5px;color:var(--muted);font-weight:400}
+
+  /* 可折叠卡片：折叠时只留标题栏（显示状态），展开才显示正文 */
+  .card.fold>.card-head{border-bottom:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .card.fold.open>.card-head{border-bottom:1px solid var(--line)}
+  .card.fold>.card-head:active{background:var(--chip)}
+  .card.fold>.card-body{display:none}
+  .card.fold.open>.card-body{display:block}
+  .caret{flex:0 0 auto;width:16px;height:16px;position:relative;transition:transform .18s;opacity:.6}
+  .caret::after{content:"";position:absolute;left:4px;top:3px;width:6px;height:6px;
+    border:solid currentColor;border-width:0 1.8px 1.8px 0;transform:rotate(45deg)}
+  .card.fold.open .caret{transform:rotate(-180deg)}
+  /* 在标题栏里直接显一个关键状态点 */
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--muted)} .dot.bad{background:var(--danger)}
+  .dot.warn{background:var(--warn)}
+
+  /* 明细列表限高，超出可滚动 */
+  #detailList{max-height:44vh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+
+  /* ---- 拦截清单：胶囊卡片（一行两个） ---- */
+  #groups{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+
+  .cap{position:relative;background:var(--card);border:1px solid var(--line);
+    border-radius:17px;padding:12px 13px 11px;cursor:pointer;overflow:hidden;
+    transition:transform .13s ease, border-color .2s, box-shadow .2s;
+    text-align:left;-webkit-tap-highlight-color:transparent}
+  .cap:active{transform:scale(.972)}
+  /* 整组都拦截时描边变绿 + 淡淡底色，扫一眼就知道哪组生效了 */
+  .cap.on{border-color:color-mix(in srgb,var(--ok) 55%,var(--line));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--ok) 22%,transparent) inset}
+  .cap .ctop{display:flex;align-items:center;gap:7px}
+  .cap .cdot{width:8px;height:8px;border-radius:50%;background:var(--muted);
+    flex:0 0 8px;transition:background .2s}
+  .cap.on .cdot{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+  .cap .ctitle{font-size:13.5px;font-weight:600;flex:1;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cap .cwarn{font-size:10.5px;font-weight:600;color:var(--warn);flex:0 0 auto}
+  .cap .cdesc{font-size:11px;color:var(--muted);line-height:1.4;margin-top:5px;
+    min-height:31px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .cap .cbar{height:4px;border-radius:2px;background:var(--chip);overflow:hidden;margin-top:8px}
+  .cap .cbar i{display:block;height:100%;width:0;border-radius:2px;background:var(--muted);
+    transition:width .28s ease,background .2s}
+  .cap.on .cbar i{background:var(--ok)}
+  .cap.part .cbar i{background:var(--accent)}
+  .cap .cfoot{display:flex;align-items:baseline;justify-content:space-between;margin-top:6px}
+  .cap .ccount{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted)}
+  .cap.on .ccount{color:var(--ok)}
+  .cap.part .ccount{color:var(--accent)}
+  .cap .cmore{font-size:10.5px;color:var(--muted)}
+
+  /* ---- 底部面板：展示某个分组的条目 ---- */
+  .sheet-mask{position:fixed;inset:0;z-index:29;background:rgba(0,0,0,.42);
+    opacity:0;pointer-events:none;transition:opacity .22s;backdrop-filter:blur(2px)}
+  .sheet-mask.show{opacity:1;pointer-events:auto}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:30;max-height:84vh;
+    display:flex;flex-direction:column;background:var(--card);
+    border-radius:20px 20px 0 0;box-shadow:0 -10px 40px rgba(0,0,0,.32);
+    transform:translateY(101%);transition:transform .26s cubic-bezier(.22,.85,.3,1);
+    overscroll-behavior:contain}
+  .sheet.show{transform:translateY(0)}
+  .sheet-grab{width:38px;height:4px;border-radius:2px;background:var(--line);
+    margin:9px auto 0;flex:0 0 auto}
+  .sheet-head{display:flex;align-items:center;gap:9px;padding:11px 16px;
+    border-bottom:1px solid var(--line);flex:0 0 auto}
+  .sheet-head h2{font-size:15px;margin:0;flex:1}
+  .sheet-head .gsum{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .sheet-body{overflow-y:auto;-webkit-overflow-scrolling:touch;
+    padding-bottom:calc(env(safe-area-inset-bottom) + 14px)}
+  .gchk{appearance:none;width:19px;height:19px;flex:0 0 19px;margin:0;
+    border:1.6px solid var(--muted);border-radius:5px;position:relative;
+    background:transparent;transition:.14s;cursor:pointer}
+  .gchk:checked,.gchk:indeterminate{background:var(--accent);border-color:var(--accent)}
+  .gchk:checked::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;
+    border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .gchk:indeterminate::after{content:"";position:absolute;left:4px;top:7.5px;width:9px;height:2px;
+    background:#fff;border-radius:1px}
+  .gchk:disabled{opacity:.3}
+  .row .name{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .row .name .tag{margin-left:0}
+  /* 高风险/谨慎项左侧一条色线，扫视更快 */
+  .row.danger{box-shadow:inset 2px 0 0 var(--danger)}
+  .row.warn{box-shadow:inset 2px 0 0 var(--warn)}
+
+  /* ---- 关于我们：整行页脚卡片 ---- */
+  .cap.about{grid-column:1 / -1;cursor:default;
+    display:flex;align-items:center;gap:13px;flex-wrap:wrap;
+    background:linear-gradient(135deg,
+      color-mix(in srgb,var(--accent) 9%,var(--card)),
+      color-mix(in srgb,var(--ok) 9%,var(--card)))}
+  .cap.about:active{transform:none}
+  .cap.about .aleft{flex:1;min-width:170px}
+  .cap.about .ctitle{background:linear-gradient(92deg,var(--accent),var(--ok));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    font-size:14.5px;white-space:normal}
+  .cap.about .cdesc{-webkit-line-clamp:2;min-height:0;margin-top:4px}
+  .cap.about .meta{font-size:10.5px;color:var(--muted);margin-top:5px;
+    display:flex;gap:9px;flex-wrap:wrap}
+  .cap.about .meta span{font-family:ui-monospace,Menlo,monospace}
+  .cap.about .qq{display:flex;align-items:center;gap:9px;flex:0 0 auto;
+    background:var(--card);border:1px solid var(--line);
+    border-radius:13px;padding:9px 12px;cursor:pointer;
+    transition:border-color .16s,background .16s}
+  .cap.about .qq:active{background:color-mix(in srgb,var(--accent) 13%,var(--card));
+    border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+  .cap.about .qq .ql{font-size:10px;color:var(--muted);line-height:1.2}
+  .cap.about .qq .qv{font-size:15px;font-weight:700;letter-spacing:.4px;
+    font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace}
+  .cap.about .qq .qcopy{font-size:10.5px;color:var(--accent);
+    border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));
+    border-radius:7px;padding:3px 8px;flex:0 0 auto}
+  .row{display:flex;align-items:flex-start;gap:11px;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer}
+  .row:first-of-type{border-top:none}
+  .row:active{background:var(--chip)}
+  .row input{appearance:none;width:21px;height:21px;flex:0 0 21px;margin:1px 0 0;
+    border:1.6px solid var(--muted);border-radius:6px;position:relative;background:transparent;transition:.14s}
+  .row input:checked{background:var(--accent);border-color:var(--accent)}
+  .row input:checked::after{content:"";position:absolute;left:6px;top:2px;width:5px;height:10px;
+    border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .row input:disabled{opacity:.35}
+  .row .body{flex:1;min-width:0}
+  .row .name{font-size:14px;font-weight:500}
+  .row .pkg{font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace;
+    word-break:break-all;margin-top:1px}
+  .row .desc{font-size:12px;color:var(--muted);margin-top:3px}
+  .tag{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:5px;
+    background:var(--chip);color:var(--muted);margin-left:6px;vertical-align:1px}
+  .tag.risk{background:rgba(217,48,37,.12);color:var(--danger)}
+  .tag.warn{background:rgba(178,106,0,.14);color:var(--warn)}
+  .tag.off{background:rgba(26,127,55,.13);color:var(--ok)}
+  .tag.absent{background:var(--chip);color:var(--muted);opacity:.8}
+  .bar{
+    position:fixed;left:0;right:0;bottom:0;padding:10px 12px calc(env(safe-area-inset-bottom) + 10px);
+    background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);
+    border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;
+  }
+  button{
+    font:inherit;font-weight:600;border-radius:11px;border:1px solid var(--line);
+    background:var(--card);color:var(--fg);padding:11px 14px;cursor:pointer
+  }
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;flex:1}
+  button:disabled{opacity:.45}
+  .count{font-size:12px;color:var(--muted);white-space:nowrap}
+  /* 内存 / CPU 面板 */
+  .memlabel{font-size:15px;font-weight:600}
+  .memlabel b{font-size:19px;color:var(--accent)}
+  .memnote{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .membar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:9px 0 11px}
+  .membar i{display:block;height:100%;background:var(--ok);width:0;transition:width .3s}
+  .membar i.warn{background:var(--warn)} .membar i.bad{background:var(--danger)}
+  .grid4{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .grid4 div{background:var(--chip);border-radius:9px;padding:7px 10px}
+  .grid4 .k{font-size:10.5px;color:var(--muted)}
+  .grid4 .v{font-size:13.5px;font-weight:600;margin-top:1px}
+  .tabs{display:flex;gap:6px;padding:9px 14px;border-bottom:1px solid var(--line)}
+  .tab{font:inherit;font-size:12.5px;padding:5px 13px;border-radius:8px;border:1px solid var(--line);
+    background:transparent;color:var(--muted);cursor:pointer;font-weight:500}
+  .tab.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .prow{display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid var(--line)}
+  .prow:first-child{border-top:none}
+  .prow .pb{flex:1;min-width:0}
+  .prow .pn{font-size:12.5px;word-break:break-all;
+    font-family:ui-monospace,Menlo,monospace}
+  .prow .ps{font-size:11px;color:var(--muted);margin-top:2px}
+  .prow .pv{font-size:13px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .sbtn{font:inherit;font-size:11.5px;padding:5px 10px;border-radius:8px;
+    border:1px solid var(--line);background:var(--card);color:var(--danger);cursor:pointer}
+  .sbtn:disabled{opacity:.3;color:var(--muted)}
+  .empty{text-align:center;color:var(--muted);font-size:12.5px;padding:22px 0}
+  /* 功能面板数据未就绪时：半透明 + 禁交互，避免先闪默认值 */
+  .fn-loading{opacity:.35;pointer-events:none;position:relative}
+  .fn-loading::before{content:"读取中…";position:absolute;inset:0;display:flex;align-items:center;
+    justify-content:center;font-size:13px;color:var(--muted);z-index:2}
+
+  /* 加载弹窗：操作期间给明确反馈，避免"点了不知道有没有生效" */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);backdrop-filter:blur(3px);
+    display:none;align-items:center;justify-content:center;z-index:20;
+    padding:calc(env(safe-area-inset-top) + 16px) 20px calc(env(safe-area-inset-bottom) + 16px)}
+  .overlay.show{display:flex}
+  .overlay .box{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:22px 26px;min-width:200px;max-width:86vw;text-align:center;
+    box-shadow:0 10px 36px rgba(0,0,0,.28);animation:pop .16s ease-out}
+  @keyframes pop{from{transform:scale(.94);opacity:.6}to{transform:scale(1);opacity:1}}
+  .spinner{width:34px;height:34px;margin:0 auto 13px;border-radius:50%;
+    border:3px solid var(--line);border-top-color:var(--accent);
+    animation:spin .75s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .overlay .t{font-size:14.5px;font-weight:600}
+  .overlay .s{font-size:12px;color:var(--muted);margin-top:5px;min-height:16px;
+    font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+  .spinner.done{border-color:var(--ok);animation:none;position:relative}
+  .spinner.done::after{content:"";position:absolute;left:10px;top:5px;width:8px;height:15px;
+    border:solid var(--ok);border-width:0 3px 3px 0;transform:rotate(45deg)}
+  .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 86px);
+    transform:translateX(-50%) translateY(10px);background:#000c;color:#fff;
+    padding:9px 15px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;
+    transition:.2s;max-width:88vw;text-align:center;z-index:25}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .mini{font-size:11.5px;color:var(--muted);padding:9px 14px;border-top:1px solid var(--line)}
+  .loading{text-align:center;color:var(--muted);padding:28px 0;font-size:13px}
+</style>
+</head>
+<body>
+
+<h1>温控性能</h1>
+<div class="sub" id="sub">读取中…</div>
+
+<div class="mini" style="font-size:12.5px;font-weight:600;margin:2px 2px 8px">性能与内存</div>
+<div id="funcGrid"><div class="loading">读取中…</div></div>
+
+<div class="mini" style="font-size:12.5px;font-weight:600;margin:2px 2px 8px">云控拦截（避免 OTA 覆盖 root）</div>
+<div id="groups"><div class="loading">正在读取包状态…</div></div>
+
+<!-- 功能面板容器：默认隐藏，点胶囊时移入底部分组面板 -->
+<div id="panelStore" style="display:none">
+
+  <!-- 温控性能 -->
+  <div id="cpulPanel">
+    <div class="mini" style="border:none;padding:0 0 10px" id="cpulNote">
+      解除出厂施加的 CPU 频率上限（大核被压到硬件上限的 58%）。写入立即生效，无需重启。
+      带有<b>温度保护</b>：超过阈值自动收回，降温后恢复。
+    </div>
+    <div class="row" style="cursor:default;display:block">
+      <div class="memlabel">当前上限 <b id="cpulState">—</b></div>
+      <div class="grid4" style="margin-top:4px">
+        <div><div class="k">小核 上限/满频</div><div class="v" id="cpulC0">—</div></div>
+        <div><div class="k">中核 上限/满频</div><div class="v" id="cpulC4">—</div></div>
+        <div><div class="k">大核 上限/满频</div><div class="v" id="cpulC7">—</div></div>
+        <div><div class="k">机身 / 外壳</div><div class="v" id="cpulTempRead">—</div></div>
+      </div>
+    </div>
+    <div class="row" style="cursor:default">
+      <div class="body">
+        <div class="name">温度阈值 <span class="tag" id="cpulTempTag">55.0°C</span></div>
+        <div class="desc">按<b>机身表面温度</b>判断：超过该值自动收回上限，降到阈值 −3°C 后恢复。调高会更热、更烫手。</div>
+        <input type="range" id="cpulTemp" min="45000" max="65000" step="500" value="55000"
+               style="width:100%;margin-top:10px;accent-color:var(--accent)">
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab" id="cpulPresetCool" style="padding:6px 11px">保守 50°</button>
+          <button class="tab on" id="cpulPresetStd" style="padding:6px 11px">标准 55°(推荐)</button>
+          <button class="tab" id="cpulPresetHot" style="padding:6px 11px">激进 60°</button>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="cursor:default">
+      <div class="body">
+        <div class="name">保护温区 <span class="tag" id="cpulZoneTag">机身</span></div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab on" id="cpulZoneSkin" style="padding:8px 14px">机身表面(推荐)</button>
+          <button class="tab" id="cpulZoneShell" style="padding:8px 14px">外壳</button>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="cursor:default">
+      <div class="body">
+        <div class="name">生效范围</div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab on" id="cpulModeGlobal" style="padding:8px 14px">全局常开</button>
+          <button class="tab" id="cpulModeGame" style="padding:8px 14px">仅游戏(推荐)</button>
+          <button class="tab" id="cpulModeApps" style="padding:8px 14px">指定应用</button>
+        </div>
+        <div class="desc" style="margin-top:6px" id="cpulModeDesc">「仅游戏」读系统游戏检测；「指定应用」只在勾选的应用处于前台时生效。</div>
+        <div id="cpulAppsWrap" style="display:none;margin-top:8px">
+          <button id="cpulPickApps" style="padding:8px 14px">选择应用…</button>
+          <span class="mini" style="border:none;padding:0;display:inline-block" id="cpulAppsSum">未选择</span>
+        </div>
+      </div>
+    </div>
+    <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">
+      <button class="primary" id="cpulApply" style="padding:9px 12px">开启</button>
+      <button id="cpulStop" style="padding:9px 12px">关闭并还原</button>
+      <button id="cpulRefresh" style="padding:9px 12px">刷新</button>
+    </div>
+    <div class="mini" style="border-top:1px solid var(--line);font-size:12px" id="cpulInfo">—</div>
+  </div>
+
+  <!-- 内存 / 占用明细（合并） -->
+  <div id="memPanel">
+    <div class="row" style="cursor:default;display:block">
+      <div class="memlabel">可用内存 <b id="memPct">—</b> <span style="font-size:13px;color:var(--muted)" id="memAbs"></span></div>
+      <div class="membar"><i id="memBar"></i></div>
+      <div class="grid4">
+        <div><div class="k">空闲</div><div class="v" id="memFree">—</div></div>
+        <div><div class="k">zram 压缩占用</div><div class="v" id="memZram">—</div></div>
+        <div><div class="k">进程数</div><div class="v" id="memProcs">—</div></div>
+        <div><div class="k">负载 / 活动进程</div><div class="v" id="memLoad">—</div></div>
+      </div>
+      <div class="mini" style="border:none;padding:9px 0 0" id="memNote">—</div>
+    </div>
+    <div class="mini" style="display:flex;gap:8px;border-top:1px solid var(--line)">
+      <button class="primary" id="memClean" style="padding:9px 12px">一键清理后台</button>
+      <button id="memRefresh" style="padding:9px 12px">刷新</button>
+    </div>
+    <div class="tabs">
+      <button class="tab on" id="tabMem">内存明细</button>
+      <button class="tab" id="tabCpu">CPU 明细</button>
+    </div>
+    <div id="detailList"><div class="empty">尚未加载</div></div>
+  </div>
+
+  <!-- 云控残留清理已并入「云控与遥测」明细面板（见 CLOUDCLEAN_HTML） -->
+
+</div>
+
+<!-- 分组明细面板 -->
+<div class="sheet-mask" id="sheetMask"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-grab"></div>
+  <div class="sheet-head">
+    <input type="checkbox" class="gchk" id="sheetAll">
+    <h2 id="sheetTitle">—</h2>
+    <span class="gsum" id="sheetSum"></span>
+  </div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
+
+<div class="bar">
+  <div class="count" id="count">—</div>
+  <button id="reset">还原</button>
+  <button class="primary" id="apply" disabled>应用</button>
+</div>
+<div class="toast" id="toast"></div>
+<div class="overlay" id="overlay">
+  <div class="box">
+    <div class="spinner" id="ovSpin"></div>
+    <div class="t" id="ovText">处理中…</div>
+    <div class="s" id="ovStep"></div>
+  </div>
+</div>
+
+<script>
+/* ---------- KernelSU WebUI bridge ---------- */
+let __seq = 0;
+function exec(cmd, opts) {
+  return new Promise((resolve, reject) => {
+    const name = "__ksu_cb_" + (__seq++);
+    window[name] = (errno, stdout, stderr) => {
+      delete window[name];
+      resolve({ errno, stdout, stderr });
+    };
+    try {
+      ksu.exec(cmd, JSON.stringify(opts || {}), name);
+    } catch (e) {
+      delete window[name];
+      reject(e);
+    }
+  });
+}
+// 安全取元素：元素不存在时返回 null，避免重构后残留引用抛异常
+function $(id){ return document.getElementById(id); }
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+const MODDIR = "/data/adb/modules/oplus-cloud-block";
+
+/* ---------- 加载弹窗 ---------- */
+let ovTimer = null, ovHide = null, ovBusy = false;
+function showLoad(text) {
+  clearTimeout(ovHide);
+  ovBusy = true;
+  document.getElementById("ovText").textContent = text || "处理中…";
+  document.getElementById("ovStep").textContent = "";
+  document.getElementById("ovSpin").className = "spinner";
+  document.getElementById("overlay").classList.add("show");
+  // 超过 1.2s 仍未结束，补一行说明，让用户知道不是卡死
+  clearTimeout(ovTimer);
+  ovTimer = setTimeout(() => {
+    const s = document.getElementById("ovStep");
+    if (!s.textContent) s.textContent = "命令执行较慢，请稍候…";
+  }, 1200);
+}
+function setStep(msg) {
+  document.getElementById("ovStep").textContent = msg || "";
+}
+function endLoad(ok, msg) {
+  clearTimeout(ovTimer);
+  ovBusy = false;
+  const sp = document.getElementById("ovSpin");
+  sp.className = "spinner" + (ok ? " done" : "");
+  document.getElementById("ovStep").textContent = msg || "";
+  // 成功时快速闪现对勾再关闭；失败多停一会儿让人看清
+  clearTimeout(ovHide);
+  ovHide = setTimeout(() => document.getElementById("overlay").classList.remove("show"), ok ? 420 : 1500);
+}
+
+/* 让出一帧，确保弹窗先渲染出来，再执行可能阻塞主线程的 ksu.exec。
+   否则 DOM 改完立刻被 native 桥接卡住，弹窗要等命令跑完才画出来
+   —— 表现就是「点了好几秒才有反应」。 */
+function paint() {
+  return new Promise(resolve => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(() => requestAnimationFrame(fin));
+    setTimeout(fin, 150);   // 兜底：WebView 不可见时 rAF 可能不触发
+  });
+}
+
+/* ---------- Catalog ---------- */
+/* checked = 默认勾选（即“默认拦截”） */
+const CATALOG = [
+  {
+    title: "系统更新", hint: "拦截 OTA，防止 root 被覆盖", defaultOn: true,
+    items: [
+      { pkg:"com.oplus.ota", label:"系统更新", desc:"更新客户端：检查、下载、提示升级", checked:true },
+      { pkg:"com.oplus.romupdate", label:"ROM 更新", desc:"整包 ROM 更新服务", checked:true },
+      { pkg:"com.oplus.cota", label:"运营商 OTA", desc:"COTA 运营商推送升级", checked:true },
+      { pkg:"com.oplus.sau", label:"系统应用静默更新", desc:"云控下发新版本系统应用的通道", checked:true },
+      { pkg:"com.oplus.sauhelper", label:"SAU 执行器", desc:"配合 SAU 完成静默安装", checked:true },
+    ]
+  },
+  {
+    title: "云控与遥测", hint: "拦截策略下发与数据上报；云控核心按组件拆分，不禁整包", defaultOn: true,
+    items: [
+      // com.heytap.htms 是「云控 + 账号 + 支付 + 游戏联运」共用的宿主包，
+      // 禁用整包会让 OPPO 账号登录、游戏联运登录、支付全部失效。
+      // 因此这里只关它的云控通道组件，包本身保持启用。
+      { pkg:"com.heytap.htms", cls:"com.heytap.msp.cloudctrl.ipc.CloudCtrlService",
+        label:"云控通道", desc:"策略下发 IPC（v2），账号/联运不受影响", checked:true },
+      { pkg:"com.heytap.htms", cls:"com.heytap.cloudconfig.v3.kit.ipc.CloudCtrlV3Service",
+        label:"云控通道 v3", desc:"新版策略下发 IPC（v3）", checked:true },
+      { pkg:"com.heytap.htms", cls:"com.heytap.msp.cloudctrlreport.service.CloudConfigReportService",
+        label:"云控上报", desc:"云控配置的回执与上报", checked:true },
+      { pkg:"com.oplus.statistics.rom", label:"ROM 遥测", desc:"系统级埋点与统计上报", checked:true },
+      { pkg:"com.oplus.pantanal.ums", label:"桌面卡片云配置", desc:"卡片/负一屏的云端配置下发", checked:false },
+    ]
+  },
+  {
+    title: "推送与账号", hint: "会影响微信等应用推送，谨慎勾选", defaultOn: false,
+    items: [
+      { pkg:"com.oplus.metis", label:"推送数据通道", desc:"MCS 推送的数据处理服务（影响消息推送）", checked:false, risk:"warn" },
+      { pkg:"com.heytap.mcs", label:"推送连接服务", desc:"维持长连接；关掉后推送可能收不到", checked:false, risk:"warn" },
+      { pkg:"com.heytap.openid", label:"账号 OpenID", desc:"OPPO 账号体系依赖", checked:false, risk:"warn" },
+      { pkg:"com.heytap.cloud", label:"云服务", desc:"云同步/云备份入口", checked:false, risk:"warn" },
+    ]
+  },
+  {
+    title: "系统服务", hint: "不建议关闭，可能引起卡顿或功能异常", defaultOn: false,
+    items: [
+      { pkg:"com.oplus.athena", label:"系统调度", desc:"进程/资源调度，关掉易卡顿", checked:false, risk:"danger" },
+      { pkg:"com.oplus.obrain", label:"性能服务", desc:"性能与后台策略", checked:false, risk:"danger" },
+      { pkg:"com.oplus.atlas", label:"常驻多媒体服务", desc:"PERSISTENT 服务，缩略图/多媒体", checked:false, risk:"danger" },
+      { pkg:"com.oplus.deepthinker", label:"智能调度", desc:"后台冻结、游戏加速", checked:false, risk:"danger" },
+      { pkg:"com.oplus.apprecover", label:"应用恢复", desc:"MDS 服务", checked:false, risk:"danger" },
+      { pkg:"com.oplus.exsystemservice", label:"系统扩展服务", desc:"ColorOS 扩展能力", checked:false, risk:"danger" },
+    ]
+  },
+  {
+    title: "其他", hint: "按需选择", defaultOn: false,
+    items: [
+      { pkg:"com.oplus.olc", label:"OLC 服务", desc:"在线配置/日志相关", checked:false },
+      { pkg:"com.oplus.owkservice", label:"OWK 服务", desc:"ColorOS 组件服务", checked:false },
+      { pkg:"com.heytap.tas", label:"TAS 钱包", desc:"支付相关组件", checked:false },
+      { pkg:"com.oplus.beaconlink", label:"BeaconLink", desc:"近场/信标相关", checked:false },
+    ]
+  },
+];
+
+/* ---------- State ---------- */
+let installed = new Set();
+let disabled  = new Set();
+let disabledComps = new Set();   // 形如 "pkg/class"，当前已禁用的组件
+const selected = new Set();   // 当前勾选（= 希望被拦截），存 key
+let savedSelected = new Set();   // 上次「应用」时的勾选快照
+
+/* 条目的唯一 key：包级 = 包名；组件级 = "包名/类名" */
+function keyOf(it) {
+  return it.cls ? (it.pkg + "/" + it.cls) : it.pkg;
+}
+/* 条目当前是否已被拦截 */
+function isBlocked(it) {
+  return it.cls ? disabledComps.has(keyOf(it)) : disabled.has(it.pkg);
+}
+
+/* ---------- Load ---------- */
+async function loadState() {
+  // 组件级条目需要单独查 disabledComponents；包级用 pm list。
+  const compPkgs = [];
+  for (const g of CATALOG) for (const it of g.items) {
+    if (it.cls && compPkgs.indexOf(it.pkg) < 0) compPkgs.push(it.pkg);
+  }
+  const compCmd = compPkgs.length
+    ? compPkgs.map(p =>
+        'echo "@@' + p + '@@"; ' +
+        'dumpsys package ' + p + ' 2>/dev/null | ' +
+        'sed -n "/disabledComponents:/,/enabledComponents:/p"'
+      ).join("; ") + "; "
+    : "";
+
+  const r = await exec(
+    'pm list packages --user 0 2>/dev/null; echo "---"; ' +
+    'pm list packages -d --user 0 2>/dev/null; echo "---"; ' + compCmd
+  );
+  // 统一去掉 \r：不同 shell/传输通道可能带回车，会让 "---" 与类名匹配失败
+  const out = (r.stdout || "").replace(/\r/g, "").split("\n");
+  const s1 = out.indexOf("---");
+  const s2 = out.indexOf("---", s1 + 1);
+  installed = new Set(out.slice(0, s1).filter(Boolean).map(s => s.replace("package:", "").trim()));
+  disabled  = new Set(out.slice(s1 + 1, s2).filter(Boolean).map(s => s.replace("package:", "").trim()));
+
+  // 解析组件段：@@pkg@@ 之后、下一个 @@ 之前，每行去掉缩进就是类名
+  disabledComps = new Set();
+  let cur = null;
+  for (const raw of out.slice(s2 + 1)) {
+    const m = raw.match(/^@@(.+)@@$/);
+    if (m) { cur = m[1]; continue; }
+    if (!cur) continue;
+    const cls = raw.trim();
+    if (!cls || cls.indexOf(":") >= 0) continue;
+    if (cls === "enabledComponents" || cls === "disabledComponents") continue;
+    disabledComps.add(cur + "/" + cls);
+  }
+}
+
+async function loadSelection() {
+  const r = await exec('cat "' + MODDIR + '/packages.txt" 2>/dev/null');
+  const lines = (r.stdout || "").split("\n");
+  const listed = new Set();
+  for (const raw of lines) {
+    const p = raw.split("#")[0].replace(/[ \t\r\n]/g, "");
+    if (p) listed.add(p);
+  }
+  selected.clear();
+  for (const g of CATALOG) for (const it of g.items) {
+    const on = listed.has(keyOf(it));
+    it.checked = on;
+    if (on) selected.add(keyOf(it));
+  }
+  savedSelected = new Set(selected);   // 记录「已保存」基线，用于「应用」快速判断
+}
+
+/* ---------- Render ---------- */
+/* 拦截清单：一行两个的胶囊卡片。
+   胶囊只显示组的摘要（拦截进度、是否有风险项），点开用底部面板看具体条目。
+   这样整页不再是长长的线性列表，关键状态也能一眼扫完。 */
+function render() {
+  const host = document.getElementById("groups");
+  host.innerHTML = "";
+
+  CATALOG.forEach((g, gi) => {
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    cap.id = "cap" + gi;
+
+    const top = document.createElement("div");
+    top.className = "ctop";
+    top.innerHTML =
+      '<span class="cdot"></span>' +
+      '<span class="ctitle">' + esc(g.title) + '</span>' +
+      '<span class="cwarn" id="cwarn' + gi + '"></span>';
+
+    const desc = document.createElement("div");
+    desc.className = "cdesc";
+    desc.textContent = g.hint;
+
+    const bar = document.createElement("div");
+    bar.className = "cbar";
+    bar.innerHTML = '<i id="cbar' + gi + '"></i>';
+
+    const foot = document.createElement("div");
+    foot.className = "cfoot";
+    foot.innerHTML =
+      '<span class="ccount" id="ccount' + gi + '">—</span>' +
+      '<span class="cmore">查看 ›</span>';
+
+    cap.appendChild(top);
+    cap.appendChild(desc);
+    cap.appendChild(bar);
+    cap.appendChild(foot);
+    cap.addEventListener("click", () => openSheet(gi));
+    host.appendChild(cap);
+
+    refreshCap(gi);
+  });
+
+  // 末尾追加「关于我们」胶囊
+  host.appendChild(buildAboutCap());
+
+  updateCount();
+}
+
+/* 「关于我们」：整行页脚卡片，QQ 可点复制 */
+function buildAboutCap() {
+  const cap = document.createElement("div");
+  cap.className = "cap about";
+
+  const left = document.createElement("div");
+  left.className = "aleft";
+  left.innerHTML =
+    '<div class="ctop" style="gap:7px">' +
+      '<span class="cdot" style="background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)"></span>' +
+      '<span class="ctitle">关于我们</span>' +
+    '</div>' +
+    '<div class="cdesc">云控拦截 · 温控性能 · 内存面板，全部本地实现，数据不出设备。</div>' +
+    '<div class="meta"><span>酷安@谋事在人成事在天</span><span>纯本地</span><span>无联网</span>' +
+      '<span id="aboutChangelog" style="cursor:pointer;color:var(--accent);font-weight:600">更新日志 ›</span>' +
+    '</div>';
+
+  const qq = document.createElement("div");
+  qq.className = "qq";
+  qq.innerHTML =
+    '<div><div class="ql">QQ / 微信</div><div class="qv">706412584</div></div>' +
+    '<span class="qcopy">复制</span>';
+  qq.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const id = "706412584";
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(id);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = id;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      toast("已复制 QQ：" + id);
+    } catch (err) {
+      toast("复制失败，请手动记录：" + id);
+    }
+  });
+
+  cap.appendChild(left);
+  cap.appendChild(qq);
+  // 「更新日志」点开在底部面板显示 CHANGELOG.md
+  const cl = left.querySelector("#aboutChangelog");
+  if (cl) cl.addEventListener("click", (e) => { e.stopPropagation(); openChangelog(); });
+  return cap;
+}
+
+/* 更新日志：读模块根目录的 CHANGELOG.md，渲染进底部面板 */
+async function openChangelog() {
+  // 复用 sheet：先按功能面板的方式准备
+  fnRestore();
+  const wrap = document.getElementById("sheetBody");
+  wrap.innerHTML = '<div class="empty">读取中…</div>';
+  document.getElementById("sheetAll").style.display = "none";
+  document.getElementById("sheetSum").textContent = "";
+  document.getElementById("sheetTitle").textContent = "更新日志";
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+  await paint();
+  const r = await exec('cat "' + MODDIR + '/CHANGELOG.md" 2>/dev/null');
+  const md = (r.stdout || "").trim();
+  const box = document.createElement("div");
+  box.id = "fnHolder";
+  box.style.cssText = "padding:4px 14px 18px;font-size:13px;line-height:1.6";
+  if (!md) {
+    box.innerHTML = '<div class="empty">暂无更新日志</div>';
+  } else {
+    box.innerHTML = md.split("\n").map(line => {
+      const t = line.trim();
+      if (/^##\s+/.test(t)) return '<div style="font-size:14.5px;font-weight:700;margin:14px 0 5px;color:var(--accent)">' + esc(t.replace(/^##\s+/, "")) + '</div>';
+      if (/^#\s+/.test(t))  return '<div style="font-size:16px;font-weight:700;margin:6px 0 8px">' + esc(t.replace(/^#\s+/, "")) + '</div>';
+      if (/^[-*]\s+/.test(t)) return '<div style="margin:3px 0 3px 2px">• ' + inlineMd(t.replace(/^[-*]\s+/, "")) + '</div>';
+      if (!t) return "";
+      return '<div style="margin:3px 0">' + inlineMd(t) + '</div>';
+    }).join("");
+  }
+  wrap.innerHTML = "";
+  wrap.appendChild(box);
+}
+// CHANGELOG 里只用到 **粗体**
+function inlineMd(s) {
+  return esc(s).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+}
+
+/* 刷新胶囊上的进度/状态 */
+function refreshCap(gi) {
+  const g = CATALOG[gi];
+  const inst = g.items.filter(it => installed.has(it.pkg));
+  const on = inst.filter(it => selected.has(keyOf(it)));
+
+  const el = (id) => document.getElementById(id);
+  const c = el("ccount" + gi);
+  if (c) c.textContent = on.length + " / " + inst.length + " 已拦截";
+  const b = el("cbar" + gi);
+  if (b) b.style.width = inst.length ? (on.length / inst.length * 100) + "%" : "0%";
+  const w = el("cwarn" + gi);
+  if (w) {
+    const risky = on.filter(it => it.risk).length;
+    w.textContent = risky ? ("⚠ " + risky) : "";
+  }
+  const cap = el("cap" + gi);
+  if (cap) {
+    const full = inst.length > 0 && on.length === inst.length;
+    cap.classList.toggle("on", full);
+    cap.classList.toggle("part", on.length > 0 && !full);
+  }
+}
+
+/* 常见应用中文名映射（ColorOS 的 dumpsys 不输出 label，且无 d8 编译 dex，
+   故用映射表覆盖常用应用，未收录的回退显示包名）。 */
+const APP_NAMES = {
+  "com.ss.android.ugc.aweme":"抖音","com.ss.android.ugc.aweme.lite":"抖音极速版",
+  "com.tencent.mm":"微信","com.tencent.mobileqq":"QQ","com.tencent.tim":"TIM",
+  "com.tencent.tmgp.sgame":"王者荣耀","com.tencent.tmgp.pubgmhd":"和平精英",
+  "com.tencent.tmgp.pubgm":"和平精英(国际)","com.tencent.mf.uam":"元梦之星",
+  "com.tencent.lolm":"英雄联盟手游","com.miHoYo.Yuanshen":"原神",
+  "com.miHoYo.hkrpg":"崩坏：星穹铁道","com.miHoYo.enterprise.NGHSoD":"崩坏3",
+  "com.tencent.jkchess":"金铲铲之战","com.netease.party":"蛋仔派对",
+  "com.tencent.mobileqqmusic":"QQ音乐","com.netease.cloudmusic":"网易云音乐",
+  "com.kugou.android":"酷狗音乐","com.ximalaya.ting.android":"喜马拉雅",
+  "com.taobao.taobao":"淘宝","com.tmall.wireless":"天猫","com.jingdong.app.mall":"京东",
+  "com.xunmeng.pinduoduo":"拼多多","com.taobao.idlefish":"闲鱼",
+  "com.eg.android.AlipayGphone":"支付宝","com.unionpay":"云闪付",
+  "com.autonavi.minimap":"高德地图","com.baidu.BaiduMap":"百度地图",
+  "com.MobileTicket":"铁路12306","com.sdu.didi.psnger":"滴滴出行",
+  "com.sina.weibo":"微博","com.zhihu.android":"知乎","com.xingin.xhs":"小红书",
+  "tv.danmaku.bili":"哔哩哔哩","com.smile.gifmaker":"快手","com.kuaishou.nebula":"快手极速版",
+  "com.tencent.qqlive":"腾讯视频","com.qiyi.video":"爱奇艺","com.youku.phone":"优酷",
+  "com.hunantv.imgo.activity":"芒果TV","air.tv.douyu.android":"斗鱼",
+  "com.tencent.qqmusic":"QQ音乐","com.tencent.karaoke":"全民K歌",
+  "com.dragon.read":"番茄小说","com.qidian.QDReader":"起点读书",
+  "com.UCMobile":"UC浏览器","com.quark.browser":"夸克","com.android.chrome":"Chrome",
+  "com.baidu.searchbox":"百度","com.tencent.mtt":"QQ浏览器","com.heytap.browser":"OPPO浏览器",
+  "com.baidu.netdisk":"百度网盘","com.alibaba.aliyun":"阿里云",
+  "com.wudaokou.hippo":"盒马","com.sankuai.meituan":"美团","com.sankuai.meituan.takeoutnew":"美团外卖",
+  "me.ele":"饿了么","com.dianping.v1":"大众点评","ctrip.android.view":"携程",
+  "com.Qunar":"去哪儿","com.taobao.trip":"飞猪","com.MobileTicket2":"铁路12306",
+  "com.alibaba.android.rimet":"钉钉","com.tencent.wework":"企业微信",
+  "com.ss.android.lark":"飞书","com.microsoft.office.officehubrow":"Office",
+  "cn.wps.moffice_eng":"WPS Office","com.android.email":"邮件",
+  "com.tencent.weishi":"微视","com.tencent.qqpimsecure":"QQ同步助手",
+  "com.tencent.android.qqdownloader":"应用宝","com.heytap.market":"OPPO软件商店",
+  "com.coolapk.market":"酷安","com.android.vending":"Google Play",
+  "com.byxiaorun.detector":"Ruru检测","me.weishu.kernelsu":"KernelSU",
+  "de.robv.android.xposed.installer":"Xposed","com.topjohnwu.magisk":"Magisk",
+  "com.coloros.gallery3d":"相册","com.oplus.camera":"相机","com.heytap.themestore":"主题商店",
+  "com.coloros.soundrecorder":"录音机","com.coloros.calculator":"计算器",
+  "com.coloros.alarmclock":"时钟","com.coloros.note":"便签","com.coloros.filemanager":"文件管理",
+  "com.coloros.compass2":"指南针","com.coloros.calendar":"日历","com.coloros.shortcuts":"快捷指令",
+  "com.baidu.input_oppo":"百度输入法","com.sohu.inputmethod.sogou":"搜狗输入法",
+  "com.iflytek.inputmethod":"讯飞输入法","com.google.android.youtube":"YouTube",
+  "org.telegram.messenger":"Telegram","com.whatsapp":"WhatsApp",
+  "com.facebook.katana":"Facebook","com.instagram.android":"Instagram",
+  "com.tencent.map":"腾讯地图","com.tencent.wifimanager":"腾讯WiFi管家",
+  "com.netease.newsreader.activity":"网易新闻","com.ss.android.article.news":"今日头条",
+  "com.tencent.news":"腾讯新闻","com.sina.news":"新浪新闻",
+  "com.achievo.vipshop":"唯品会","com.kaola":"考拉海购","com.jifen.qukan":"趣看点",
+  "com.alibaba.aliexpresshd":"速卖通","com.shuqi.controller":"书旗小说",
+  "com.qidian.QDReader2":"起点","com.tencent.weread":"微信读书",
+};
+
+/* ---------- 性能与内存：胶囊网格（点开进底部面板） ---------- */
+const FUNCS = [
+  { id:"cpul", panel:"cpulPanel", title:"温控性能",
+    desc:"解除出厂 CPU 频率上限（大核 58%→100%），带温度保护与一键还原。" },
+  { id:"mem", panel:"memPanel", title:"内存与占用",
+    desc:"内存总览、夜间 zram、后台清理，以及内存/CPU 占用明细。" },
+];
+let funcLoaded = { cpul:false, mem:false };
+
+function renderFuncGrid() {
+  const host = document.getElementById("funcGrid");
+  host.innerHTML = "";
+  for (const f of FUNCS) {
+    const cap = document.createElement("div");
+    cap.className = "cap"; cap.id = "func_" + f.id;
+    cap.innerHTML =
+      '<div class="ctop"><span class="cdot"></span><span class="ctitle">' + esc(f.title) + '</span></div>' +
+      '<div class="cdesc">' + esc(f.desc) + '</div>' +
+      '<div class="cfoot"><span class="ccount" id="funcSum_' + f.id + '">查看 ›</span></div>';
+    cap.addEventListener("click", () => openFnPanel(f.id));
+    host.appendChild(cap);
+  }
+}
+
+let fnCurrent = null;
+let curPanelEl = null;   // 当前搬进 sheet 的面板元素本身（搬元素，不搬子节点，避免内容混串）
+
+async function openFnPanel(id) {
+  const f = FUNCS.find(x => x.id === id);
+  if (!f) return;
+  fnRestore();                 // 先把上一个面板元素归还
+  fnCurrent = id;
+  const wrap = document.getElementById("sheetBody");
+  wrap.innerHTML = "";
+  const panel = document.getElementById(f.panel);
+  wrap.appendChild(panel);     // 直接搬元素本身（原子操作）
+  curPanelEl = panel;
+  // 覆盖「先闪默认值、几秒后才读配置」：数据到位前整块遮住 + 禁交互
+  panel.classList.add("fn-loading");
+  document.getElementById("sheetAll").style.display = "none";
+  document.getElementById("sheetSum").textContent = "";
+  document.getElementById("sheetTitle").textContent = f.title;
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+  // 关键：先让 sheet 画出来，再做会阻塞主线程的 ksu.exec（否则首次点击看起来"无反应"）
+  await paint();
+  const clr = () => panel.classList.remove("fn-loading");
+  if (id === "cpul" && !funcLoaded.cpul) { funcLoaded.cpul = true; loadCpul().catch(clr); }
+  else if (id === "cpul") { clr(); }
+  if (id === "mem" && !funcLoaded.mem) { funcLoaded.mem = true; loadMemDetail().catch(clr); }
+  else if (id === "mem") { clr(); }
+}
+
+/* 应用选择器（指定应用模式） */
+// 动态 label 优先（dumpsys 最近任务里取到的真实应用名），其次内置映射表，最后回退包名
+let dynLabels = {};
+function appName(p) { return dynLabels[p] || APP_NAMES[p] || p; }
+
+async function openAppPicker() {
+  // 先把当前功能面板元素归还（否则清空 sheetBody 会把它丢掉）
+  if (curPanelEl) {
+    const store = document.getElementById("panelStore");
+    if (store) store.appendChild(curPanelEl);
+    curPanelEl = null;
+  }
+  showLoad("正在读取应用列表…");
+  await paint();
+  const r = await exec('pm list packages -3 2>/dev/null | sed "s/package://" | sort');
+  const all = (r.stdout || "").split("\n").map(s => s.trim()).filter(Boolean);
+  for (const p of cpulApps) if (all.indexOf(p) < 0) all.push(p);
+  all.sort();
+  const chosen = new Set(cpulApps);
+  // 动态取真实应用名：dumpsys 的 taskDescription 里带 label（形如 label="酷安"），
+  // 紧跟在 packageName= 之后。这样不用硬编码名字。
+  try {
+    const lr = await exec(
+      'dumpsys activity activities 2>/dev/null | awk \'' +
+      ' /packageName=/ { n=split($0,a,"packageName="); split(a[2],b," "); pkg=b[1] }' +
+      ' /taskDescription: label="/ { if(match($0,/label="[^"]*"/)){ l=substr($0,RSTART+7,RLENGTH-8); if(l!="null"&&l!=""&&pkg!="") print pkg"|"l } }\''
+    );
+    for (const ln of (lr.stdout || "").split("\n")) {
+      const i = ln.indexOf("|");
+      if (i > 0) { const k = ln.slice(0, i).trim(), v = ln.slice(i + 1).trim(); if (k && v) dynLabels[k] = v; }
+    }
+  } catch (e) {}
+  endLoad(true, all.length + " 个应用");
+
+  const wrap = document.getElementById("sheetBody");
+  wrap.innerHTML = "";
+  const holder = document.createElement("div");
+  holder.id = "fnHolder";
+  holder.innerHTML = '<div class="mini" style="border:none">勾选需要满频的应用（可多选）。保存后仅当勾选的应用处于前台时解除上限。</div>';
+
+  // 搜索框（155 个应用，方便找）
+  const search = document.createElement("input");
+  search.type = "text"; search.placeholder = "搜索应用名或包名…";
+  search.style.cssText = "width:calc(100% - 28px);margin:0 14px 8px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);font:inherit";
+  holder.appendChild(search);
+
+  const list = document.createElement("div");
+  list.id = "appPickList";
+  holder.appendChild(list);
+
+  function paintList() {
+    const q = search.value.trim().toLowerCase();
+    list.innerHTML = "";
+    for (const p of all) {
+      const nm = appName(p);
+      if (q && nm.toLowerCase().indexOf(q) < 0 && p.toLowerCase().indexOf(q) < 0) continue;
+      const row = document.createElement("label");
+      row.className = "row";
+      row.innerHTML =
+        '<input type="checkbox" ' + (chosen.has(p) ? "checked" : "") + '>' +
+        '<div class="body"><div class="name">' + esc(nm) + '</div>' +
+        '<div class="pkg">' + esc(p) + '</div></div>';
+      row.querySelector("input").addEventListener("change", (e) => {
+        if (e.target.checked) chosen.add(p); else chosen.delete(p);
+        const c = document.getElementById("appPickCount");
+        if (c) c.textContent = "已选 " + chosen.size;
+      });
+      list.appendChild(row);
+    }
+    if (!list.children.length) list.innerHTML = '<div class="empty">没有匹配的应用</div>';
+  }
+  search.addEventListener("input", paintList);
+  paintList();
+
+  const bar = document.createElement("div");
+  bar.className = "mini";
+  bar.style.cssText = "display:flex;gap:8px;position:sticky;bottom:0;background:var(--card)";
+  bar.innerHTML = '<button class="primary" id="appPickSave" style="padding:9px 12px">保存选择</button>' +
+    '<span style="align-self:center" id="appPickCount">已选 ' + chosen.size + '</span>';
+  holder.appendChild(bar);
+  wrap.appendChild(holder);
+
+  document.getElementById("sheetTitle").textContent = "选择应用";
+  document.getElementById("sheetAll").style.display = "none";
+  document.getElementById("sheetSum").textContent = "";
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+  document.getElementById("appPickSave").addEventListener("click", async () => {
+    cpulApps = [...chosen].sort();
+    try { localStorage.setItem("cpul.apps", JSON.stringify(cpulApps)); } catch (e) {}
+    // 关键：保存选择 = 直接切到「指定应用」模式并写入设备生效（不再要求用户另点「保存并开启」）
+    cpulMode = "apps";
+    cpulSyncModeTab();
+    await cpulWriteConf("apps");
+  });
+}
+function cpulShowAppsSum() {
+  const el = document.getElementById("cpulAppsSum");
+  if (el) el.textContent = cpulApps.length ? ("已选 " + cpulApps.length + " 个") : "未选择";
+}
+
+/* ---------- 分组明细面板 ---------- */
+let sheetGi = -1;
+
+function openSheet(gi) {
+  sheetGi = gi;
+  const g = CATALOG[gi];
+  document.getElementById("sheetTitle").textContent = g.title;
+  buildSheetBody();
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+}
+
+function closeSheet() {
+  fnRestore();
+  sheetGi = -1;
+  document.getElementById("sheetAll").style.display = "";
+  document.getElementById("sheetMask").classList.remove("show");
+  document.getElementById("sheet").classList.remove("show");
+}
+
+// 归还面板元素到隐藏的 panelStore，并清空 sheetBody（保证 DOM 状态干净，下次打开正常）
+function fnRestore() {
+  const store = document.getElementById("panelStore");
+  if (curPanelEl && store) store.appendChild(curPanelEl);
+  curPanelEl = null;
+  const wrap = document.getElementById("sheetBody");
+  if (wrap) wrap.innerHTML = "";      // 无条件清空：连选择器等临时内容一并清掉
+}
+
+function buildSheetBody() {
+  const gi = sheetGi;
+  if (gi < 0) return;
+  const g = CATALOG[gi];
+  const body = document.getElementById("sheetBody");
+  body.innerHTML = "";
+
+  const hint = document.createElement("div");
+  hint.className = "mini";
+  hint.style.borderTop = "none";
+  hint.textContent = g.hint;
+  body.appendChild(hint);
+
+  for (const it of g.items) {
+    const absent = !installed.has(it.pkg);
+    const isOff = isBlocked(it);
+
+    const row = document.createElement("label");
+    row.className = "row" + (it.risk === "danger" ? " danger" : (it.risk === "warn" ? " warn" : ""));
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selected.has(keyOf(it));
+    cb.disabled = absent;
+    cb.addEventListener("change", () => {
+      if (cb.checked) selected.add(keyOf(it)); else selected.delete(keyOf(it));
+      refreshCap(gi);
+      refreshSheetHead();
+      updateCount();
+    });
+
+    const b = document.createElement("div");
+    b.className = "body";
+    let tags = "";
+    if (absent) tags += '<span class="tag absent">未安装</span>';
+    else if (isOff) tags += '<span class="tag off">已拦截</span>';
+    if (it.risk === "warn") tags += '<span class="tag warn">谨慎</span>';
+    if (it.risk === "danger") tags += '<span class="tag risk">高风险</span>';
+
+    b.innerHTML =
+      '<div class="name">' + esc(it.label) + tags + '</div>' +
+      '<div class="pkg">' + esc(it.cls ? it.cls.split(".").slice(-2).join(".") : it.pkg) + '</div>' +
+      '<div class="desc">' + esc(it.desc) + '</div>';
+
+    row.appendChild(cb);
+    row.appendChild(b);
+    body.appendChild(row);
+  }
+
+  // 「云控与遥测」组：在明细面板底部并入云控残留清理入口
+  if (g.title === "云控与遥测" && window.CLOUDCLEAN_HTML) {
+    const cc = document.createElement("div");
+    cc.className = "mini";
+    cc.style.borderTop = "1px solid var(--line)";
+    cc.innerHTML = window.CLOUDCLEAN_HTML;
+    body.appendChild(cc);
+    if (window.bindCloudClean) window.bindCloudClean();
+  }
+  refreshSheetHead();
+}
+
+function refreshSheetHead() {
+  const gi = sheetGi;
+  if (gi < 0) return;
+  const g = CATALOG[gi];
+  const inst = g.items.filter(it => installed.has(it.pkg));
+  const on = inst.filter(it => selected.has(keyOf(it)));
+  document.getElementById("sheetSum").textContent = on.length + "/" + inst.length;
+  const all = document.getElementById("sheetAll");
+  all.disabled = !inst.length;
+  all.checked = inst.length > 0 && on.length === inst.length;
+  all.indeterminate = on.length > 0 && on.length < inst.length;
+}
+
+function updateCount() {
+  document.getElementById("count").textContent = "已选 " + selected.size + " 项";
+  // 与上次保存一致时禁用「应用」，避免用户白等一次无意义的写入
+  document.getElementById("apply").disabled = sameSet(selected, savedSelected);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function sameSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+/* ---------- Apply ---------- */
+function buildPackagesTxt() {
+  const L = [];
+  L.push("# 由「云控拦截」WebUI 生成");
+  L.push("# 每行一个包名；在界面中勾选 = 每次开机拦截该项。");
+  L.push("");
+  for (const g of CATALOG) {
+    const on = g.items.filter(it => selected.has(keyOf(it)));
+    if (!on.length) continue;
+    L.push("# --- " + g.title + " ---");
+    for (const it of on) L.push(keyOf(it));
+    L.push("");
+  }
+  return L.join("\n");
+}
+
+async function apply() {
+  const btn = document.getElementById("apply");
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "应用中…";
+  try {
+    // 0. 勾选与上次保存完全一致 -> 直接返回，连写文件都省掉
+    if (sameSet(selected, savedSelected)) { toast("没有变化"); return; }
+    showLoad("正在应用拦截清单…");
+    setStep("写入清单…");
+    await paint();          // 先画出弹窗，再执行会阻塞主线程的命令
+
+    // 1. 写入 packages.txt（开机自检清单）
+    const content = buildPackagesTxt();
+    const b64 = btoa(unescape(encodeURIComponent(content)));
+    const w = await exec(
+      'echo ' + b64 + ' | base64 -d > "' + MODDIR + '/packages.txt"; ' +
+      'chmod 644 "' + MODDIR + '/packages.txt"; echo RC=$?'
+    );
+    if (!(w.stdout || "").includes("RC=0")) throw new Error("写入清单失败");
+
+    // 2. 只对「状态与勾选不一致」的条目发 pm 命令。
+    //    每个 pm 调用要 0.5~2s，全量发 20 多条会卡十几秒；跳过无变化的可秒回。
+    //    包级用 disable-user / enable；组件级用 disable / enable（disable-user
+    //    对组件无效，会返回 default 且不写入）。
+    const cmds = [];
+    const changed = [];
+    for (const g of CATALOG) for (const it of g.items) {
+      if (!installed.has(it.pkg)) continue;
+      const key   = keyOf(it);
+      const want  = selected.has(key);      // true = 希望拦截（禁用）
+      const isOff = isBlocked(it);          // 当前是否已禁用
+      if (want === isOff) continue;         // 已一致，跳过
+      if (it.cls) {
+        cmds.push((want ? 'pm disable --user 0 ' : 'pm enable --user 0 ') + key + ' </dev/null');
+      } else {
+        cmds.push((want ? 'pm disable-user --user 0 ' : 'pm enable --user 0 ') + it.pkg + ' </dev/null');
+      }
+      changed.push({ it, key, off: want });
+    }
+
+    if (!cmds.length) {
+      savedSelected = new Set(selected);
+      render();
+      if (sheetGi >= 0) buildSheetBody();   // 面板开着就同步刷新
+      endLoad(true, "无需改动");
+      toast("已是最新，无需改动");
+      return;
+    }
+
+    setStep("更新 " + cmds.length + " 个应用…");
+    await paint();          // 每步都要：pm 命令是最慢的一环
+    const r = await exec(cmds.join("; ") + '; echo DONE');
+
+    // 3. 本地更新状态，避免再跑两次慢速 pm list
+    for (const c of changed) {
+      if (c.it.cls) {
+        if (c.off) disabledComps.add(c.key); else disabledComps.delete(c.key);
+      } else {
+        if (c.off) disabled.add(c.it.pkg); else disabled.delete(c.it.pkg);
+      }
+    }
+    savedSelected = new Set(selected);
+    render();
+    if (sheetGi >= 0) buildSheetBody();     // 「已拦截」标签要跟着更新
+    const ok = r.stdout && r.stdout.includes("DONE");
+    endLoad(ok, ok ? ("已更新 " + changed.length + " 项") : "部分应用失败");
+    toast(ok ? ("已应用（更新 " + changed.length + " 项）") : "已应用（有部分失败）");
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+    toast("失败：" + (e && e.message ? e.message : e));
+  } finally {
+    btn.textContent = old;
+    // 与应用后的同步状态保持一致：无改动则保持禁用
+    btn.disabled = sameSet(selected, savedSelected);
+  }
+}
+
+async function reset() {
+  if (!confirm("还原为默认推荐项（仅拦截 OTA / 云控 / 遥测）？\n未被勾选的项会被重新启用。")) return;
+  selected.clear();
+  for (const g of CATALOG) for (const it of g.items) {
+    it.checked = g.defaultOn;
+    if (g.defaultOn) selected.add(keyOf(it));
+  }
+  render();
+  if (sheetGi >= 0) buildSheetBody();
+  await apply();
+}
+
+
+/* ---------- 内存 / CPU 面板 ---------- */
+let memDetail = { A: [], C: [] };
+let memTab = "A";
+let memLoaded = false;
+
+/* ---------- 可折叠卡片 ---------- */
+function isOpen(id) { return document.getElementById(id).classList.contains("open"); }
+function setFold(id, open) {
+  document.getElementById(id).classList.toggle("open", open);
+  try { localStorage.setItem("fold." + id, open ? "1" : "0"); } catch (e) {}
+}
+function initFold(id, onOpen) {
+  let saved = null;
+  try { saved = localStorage.getItem("fold." + id); } catch (e) {}
+  const open = saved === null ? false : saved === "1";
+  setFold(id, open);
+  if (open && onOpen) onOpen();
+  return open;
+}
+function setDot(id, cls, text) {
+  const d = document.getElementById(id);
+  if (d) d.className = "dot " + cls;
+}
+function bindFold(ids, onOpen) {
+  for (const id of ids) {
+    const head = document.querySelector('#' + id + ' > .card-head');
+    if (!head) continue;
+    head.addEventListener("click", () => {
+      const open = !isOpen(id);
+      setFold(id, open);
+      if (open && onOpen) onOpen(id);
+    });
+  }
+}
+
+// 系统/持久进程不允许从面板杀（杀了会自愈或直接坏事）
+const SYS_WHITELIST = new Set([
+  "android", "system_server", "com.android.systemui", "com.android.phone",
+  "com.android.launcher", "com.android.settings", "com.android.providers.media.module",
+  "me.weishu.kernelsu", "com.coloros.assistantscreen"
+]);
+
+function mb(kb) { return (kb / 1024).toFixed(0); }
+
+async function loadMemOverview() {
+  const r = await exec('sh "' + MODDIR + '/mem.sh" overview');
+  // 注：overview 已优化到 ~320ms，且改用 R 状态计数后不再需要 1s 采样窗
+  const o = {};
+  for (const line of (r.stdout || "").split("\n")) {
+    const i = line.indexOf("=");
+    if (i > 0) o[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  if (!o.MEMTOTAL_MB) { { const e=$("memHint"); if(e) e.textContent="读取失败"; } return; }
+
+  const total = +o.MEMTOTAL_MB, avail = +o.MEMAVAIL_MB;
+  const pct = Math.round(avail / total * 100);
+  const el = document.getElementById("memPct");
+  el.textContent = pct + "%";
+  el.style.color = pct < 12 ? "var(--danger)" : (pct < 25 ? "var(--warn)" : "var(--ok)");
+  document.getElementById("memAbs").textContent =
+    "（" + avail + " / " + total + " MB）";
+  const bar = document.getElementById("memBar");
+  bar.style.width = Math.min(100, pct) + "%";
+  bar.className = pct < 12 ? "bad" : (pct < 25 ? "warn" : "");
+  document.getElementById("memFree").textContent = o.MEMFREE_MB + " MB";
+  document.getElementById("memZram").textContent = o.ZRAM_MB + " MB";
+  document.getElementById("memProcs").textContent = o.PROCS;
+  document.getElementById("memLoad").textContent =
+    (o.LOAD || "?").split(" ")[0] + " / " + (o.CPUBUSY || "?");
+  { const e=$("memHint"); if(e) e.textContent =
+    "CPU " + (o.GEAR ? o.GEAR.split(" ").map(v => (v / 1000).toFixed(0) + "M").join(" / ") : "?") ; }
+  document.getElementById("memNote").textContent =
+    o.ZRAM_MB > 1500
+      ? "zram 占用偏高（" + o.ZRAM_MB + "MB），说明后台被换出得较多，可清理一次。"
+      : "内存状况良好。zram 是把不活跃内存压缩后的占用，不需要频繁清理。";
+  // 折叠状态的标题栏状态点
+  setDot("memDot", pct < 12 ? "bad" : (pct < 25 ? "warn" : "on"));
+  { const e=$("memHint"); if(e) e.textContent = pct + "% · zram " + o.ZRAM_MB + "MB"; }
+}
+
+async function loadMemDetail() {
+  document.getElementById("detailList").innerHTML = '<div class="empty">读取中…</div>';
+  { const e=$("detailHint"); if(e) e.textContent = "采样中（约 1 秒）"; }
+  // 让「读取中…」先画出来：exec 是同步阻塞的，不先让帧的话
+  // 用户点开后会看到一段空白，然后一次性蹦出结果。
+  await paint();
+  const r = await exec('sh "' + MODDIR + '/mem.sh" list');
+  const lines = (r.stdout || "").split("\n");
+  memDetail = { A: [], C: [] };
+  for (const ln of lines) {
+    const p = ln.split("|");
+    if (p[0] === "A" && p.length >= 5) memDetail.A.push({ k: p[1], v: +p[2], adj: +p[3], n: +p[4] });
+    else if (p[0] === "C" && p.length >= 5) memDetail.C.push({ k: p[1], v: +p[2], n: +p[4] });
+  }
+  memLoaded = true;
+  renderDetail();
+  const p = document.getElementById("memPanel"); if (p) p.classList.remove("fn-loading");
+}
+
+function renderDetail() {
+  const host = document.getElementById("detailList");
+  const arr = memDetail[memTab];
+  { const e=$("detailHint"); if(e) e.textContent =
+    memTab === "A" ? (arr.length + " 个应用") : (arr.length + " 个进程（近 1 秒）"); }
+  if (!arr.length) { host.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+
+  host.innerHTML = "";
+  for (const it of arr) {
+    const row = document.createElement("div");
+    row.className = "prow";
+
+    const b = document.createElement("div");
+    b.className = "pb";
+    const isPkg = /^[a-zA-Z][\w.]*\.[\w.]+$/.test(it.k) && !it.k.includes("/");
+    let sub = "";
+    if (memTab === "A") {
+      sub = "adj " + it.adj + (it.n > 1 ? " · " + it.n + " 个进程" : "");
+      if (it.adj <= 0) sub += " · 前台/系统";
+      else if (it.adj >= 900) sub += " · 后台缓存";
+    } else {
+      sub = memTab === "C" && it.n ? "近 1 秒采样" : "";
+    }
+    b.innerHTML = '<div class="pn">' + esc(it.k) + '</div><div class="ps">' + esc(sub) + '</div>';
+
+    const v = document.createElement("div");
+    v.className = "pv";
+    v.textContent = memTab === "A" ? (mb(it.v) + " MB") : ((it.v / 10).toFixed(1) + "%");
+
+    row.appendChild(b);
+    row.appendChild(v);
+
+    if (memTab === "A" && isPkg) {
+      const btn = document.createElement("button");
+      btn.className = "sbtn";
+      btn.textContent = "停止";
+      const sys = SYS_WHITELIST.has(it.k) || it.adj <= 0;
+      if (sys) {
+        btn.disabled = true;
+        btn.title = "系统/前台进程，不建议停止";
+      } else {
+        btn.addEventListener("click", async () => {
+          if (!confirm("停止 " + it.k + "？\n\n系统随后可能自动重新拉起它——这是正常行为。")) return;
+          btn.disabled = true; btn.textContent = "…";
+          await exec('sh "' + MODDIR + '/mem.sh" kill ' + it.k);
+          await loadMemDetail();
+          await loadMemOverview();
+          toast("已停止 " + it.k);
+        });
+      }
+      row.appendChild(btn);
+    }
+    host.appendChild(row);
+  }
+}
+
+async function memClean() {
+  const btn = document.getElementById("memClean");
+  btn.disabled = true; btn.textContent = "清理中…";
+  try {
+    showLoad("正在清理后台…");
+    setStep("回收缓存进程…");
+    await paint();
+    const r = await exec('sh "' + MODDIR + '/mem.sh" clean');
+    setStep("刷新数据…");
+    await paint();
+    await loadMemOverview();
+    if (memLoaded) await loadMemDetail();
+    const out = (r.stdout || "").trim();
+    const m = out.match(/可用内存 (\d+)MB -> (\d+)MB/);
+    endLoad(true, m ? ("可用 " + m[1] + "MB → " + m[2] + "MB") : "已清理");
+    toast("已清理后台");
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+  } finally {
+    btn.disabled = false; btn.textContent = "一键清理后台";
+  }
+}
+
+/* ---------- CPU 上限解除 ---------- */
+let cpulLoaded = false, cpulConf = {}, cpulApplied = 0, cpulOrigTemp = 55000, cpulMode = "game";
+let cpulZone = "skin-msm-therm";
+let cpulAppliedZone = "skin-msm-therm";
+let cpulApps = [], cpulAppliedApps = [];
+try { cpulApps = JSON.parse(localStorage.getItem("cpul.apps") || "[]"); } catch (e) { cpulApps = []; }
+cpulAppliedApps = cpulApps.slice();
+
+function cpulSyncModeTab() {
+  document.getElementById("cpulModeGlobal").className = "tab" + (cpulMode === "global" ? " on" : "");
+  document.getElementById("cpulModeGame").className = "tab" + (cpulMode === "game" ? " on" : "");
+  document.getElementById("cpulModeApps").className = "tab" + (cpulMode === "apps" ? " on" : "");
+  const w = document.getElementById("cpulAppsWrap");
+  if (w) w.style.display = cpulMode === "apps" ? "block" : "none";
+  cpulShowAppsSum();
+}
+
+function cpulPickTab(onId, ids) {
+  for (const id of ids) document.getElementById(id).className = "tab" + (id === onId ? " on" : "");
+}
+function cpulSyncPreset() {
+  const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  const ids = ["cpulPresetCool", "cpulPresetStd", "cpulPresetHot"];
+  cpulPickTab(v === 50000 ? "cpulPresetCool" : (v === 55000 ? "cpulPresetStd" : (v === 60000 ? "cpulPresetHot" : "")), ids);
+}
+function cpulSyncZoneTab() {
+  cpulPickTab(cpulZone === "skin-msm-therm" ? "cpulZoneSkin" : "cpulZoneShell", ["cpulZoneSkin", "cpulZoneShell"]);
+  document.getElementById("cpulZoneTag").textContent = cpulZone === "skin-msm-therm" ? "机身" : "外壳";
+}
+
+async function loadCpul() {
+  const r = await exec(
+    'cat "' + MODDIR + '/cpulimit.conf" 2>/dev/null; echo "===CUT==="; ' +
+    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null'
+  );
+  const [conf, st] = (r.stdout || "").split("===CUT===");
+  const cfg = {};
+  for (const raw of (conf || "").split("\n")) {
+    const line = raw.split("#")[0];
+    const i = line.indexOf("=");
+    if (i > 0) cfg[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  cpulConf = cfg; cpulLoaded = true;
+  cpulMode = (cfg.MODE === "game" || cfg.MODE === "apps") ? cfg.MODE : "global";
+  cpulZone = cfg.ZONE === "shell_front" ? "shell_front" : "skin-msm-therm";
+  cpulAppliedZone = cpulZone;
+  const temp = parseInt(cfg.TEMP || "55000", 10);
+  cpulOrigTemp = temp; cpulApplied = temp;
+  document.getElementById("cpulTemp").value = temp;
+  document.getElementById("cpulTempTag").textContent = (temp / 1000).toFixed(1) + "°C";
+  cpulSyncPreset(); cpulSyncZoneTab(); cpulSyncModeTab();
+  renderCpul(st || "");
+  const p = document.getElementById("cpulPanel"); if (p) p.classList.remove("fn-loading");
+}
+
+function renderCpul(st) {
+  const en = cpulConf.ENABLE === "1";
+  const running = /状态：运行中/.test(st);
+  const unlocked = /9999999/.test((st.match(/当前上限：(.*)/) || [])[1] || "");
+  // 每核显示「上限 / 硬件上限」：一眼看出有没有被压（上限=硬件上限即满频）
+  // status 行形如： cpu7   1843200 /   864000 /  3187200
+  const core = k => {
+    const m = st.match(new RegExp("cpu" + k + "\\s+(\\d+)\\s*/\\s*(\\d+)\\s*/\\s*(\\d+)"));
+    return m ? { max: +m[1], hw: +m[3] } : null;
+  };
+  const MHz = v => (v / 1000).toFixed(0);
+  const setCore = (id, k) => {
+    const o = core(k);
+    if (!o) { document.getElementById(id).textContent = "—"; document.getElementById(id).style.color = ""; return; }
+    document.getElementById(id).textContent = MHz(o.max) + " / " + MHz(o.hw) + "M";
+    // 被压（上限低于硬件上限）标黄，满频标绿
+    document.getElementById(id).style.color = o.max >= o.hw ? "var(--ok)" : "var(--warn)";
+  };
+  setCore("cpulC0", 0); setCore("cpulC4", 4); setCore("cpulC7", 7);
+  // 机身 / 外壳 双温度
+  const skin = (st.match(/SKIN_TEMP=(\d+)/) || [])[1];
+  const shell = (st.match(/SHELL_TEMP=(\d+)/) || [])[1];
+  const c = v => v ? (v / 1000).toFixed(1) + "°C" : "—";
+  document.getElementById("cpulTempRead").textContent = (skin || shell)
+    ? (c(skin) + " / " + c(shell)) : "—";
+  document.getElementById("cpulTempTag").textContent = (parseInt(cpulConf.TEMP || "50000", 10) / 1000).toFixed(1) + "°C";
+  // 状态点与文案：已满频 / 待命(带原因) / 未开启
+  const hint = (st.match(/STATE_HINT=(.*)/) || [])[1] || "";
+  if (!running) { setDot("cpulDot", "off"); document.getElementById("cpulState").textContent = "未开启"; }
+  else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "已满频"; }
+  else { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = hint || "待命（条件未满足）"; }
+  cpulSyncModeTab();
+  updateCpulBtn();
+  document.getElementById("cpulInfo").textContent =
+    st.split("\n").filter(l => /skin-msm|游戏运行中|出厂备份|游戏上限/.test(l)).join(" · ") || "—";
+}
+
+function updateCpulBtn() {
+  const b = document.getElementById("cpulApply");
+  const temp = parseInt(document.getElementById("cpulTemp").value, 10);
+  const appsChanged = cpulMode === "apps" && JSON.stringify(cpulApps) !== JSON.stringify(cpulAppliedApps);
+  const changed = temp !== cpulApplied || cpulMode !== (cpulConf.MODE || "game")
+    || cpulZone !== (cpulConf.ZONE || "skin-msm-therm") || appsChanged;
+  b.disabled = !changed;
+  b.textContent = changed ? "保存并开启" : "已生效";
+}
+
+function fmtTempC(){ return (parseInt(document.getElementById("cpulTemp").value,10)/1000).toFixed(1)+"°C"; }
+
+// 写入配置并应用（mode 可选；默认用当前 cpulMode）。供「保存并开启」和「保存选择」复用。
+async function cpulWriteConf(mode) {
+  mode = mode || cpulMode;
+  const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  showLoad("正在应用 CPU 上限配置…");
+  await paint();
+  const conf = "# 由「温控性能」WebUI 生成\nENABLE=1\nTEMP=" + v +
+    "\nZONE=" + cpulZone + "\nMODE=" + mode + "\nHYST=" + (cpulConf.HYST || "3000") + "\n";
+  const appsCsv = (mode === "apps" ? cpulApps : []).join("\n");
+  const r = await exec(
+    "echo '" + conf.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.conf"' +
+    "; printf '%s\\n' '" + appsCsv.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.apps"' +
+    " && sh " + '"' + MODDIR + '/cpulimit.sh"' + " apply"
+  );
+  cpulOrigTemp = Math.min(cpulOrigTemp, v);
+  cpulApplied = v; cpulAppliedZone = cpulZone; cpulAppliedApps = cpulApps.slice();
+  await loadCpul().catch(() => {});
+  const modeName = mode === "game" ? "仅游戏" : (mode === "apps" ? ("指定应用 " + cpulApps.length + " 个") : "全局");
+  endLoad(true, "已开启（" + (v/1000).toFixed(1) + "°C · " + modeName + "）");
+  toast("CPU 上限已解除");
+  if (mode === "apps") openFnPanel("cpul");   // 从选择器返回时回到温控面板
+}
+
+async function cpulApplyConf() {
+  const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  // 拉高阈值（放宽温控）→ 二次确认
+  if (v > cpulOrigTemp) {
+    if (!confirm("阈值为 " + fmtTempC() + "，高于出厂建议（" + (cpulOrigTemp/1000).toFixed(1) +
+      "°C）。\n放宽温控可能导致设备更热、功耗更高，长时间高负载有风险。\n\n确定使用 " + fmtTempC() + " 吗？")) return;
+  }
+  // 「指定应用」模式必须先选应用
+  if (cpulMode === "apps" && !cpulApps.length) {
+    toast("请先「选择应用」");
+    openAppPicker();
+    return;
+  }
+  const btn = document.getElementById("cpulApply");
+  btn.disabled = true; btn.textContent = "应用中…";
+  try {
+    await cpulWriteConf(cpulMode);
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+  } finally { updateCpulBtn(); }
+}
+
+async function cpulStop() {
+  if (!confirm("关闭并还原出厂 CPU 上限？")) return;
+  const btn = document.getElementById("cpulStop");
+  btn.disabled = true; btn.textContent = "还原中…";
+  try {
+    showLoad("正在还原出厂上限…");
+    await paint();
+    await exec('sh "' + MODDIR + '/cpulimit.sh" stop');
+    await loadCpul().catch(() => {});
+    endLoad(true, "已还原");
+    toast("已还原出厂上限");
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+  } finally { btn.disabled = false; btn.textContent = "关闭并还原"; }
+}
+
+/* ---------- 云控残留清理 ---------- */
+let cleanLoaded = false, cleanLastSnap = "";
+
+/* 云控残留清理 UI：并入「云控与遥测」明细面板底部（由 buildSheetBody 注入） */
+window.CLOUDCLEAN_HTML =
+  '<div style="font-weight:600;color:var(--fg);margin-bottom:6px">云控残留清理</div>' +
+  '<div style="margin-bottom:8px">清理云控在本地留下的旧策略文件。<b>清理前会自动备份</b>，可一键回滚；不碰账号/支付/游戏联运。</div>' +
+  '<div id="cleanList"><div class="empty">点「重新读取」以查看残留</div></div>' +
+  '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+  '<button class="primary" id="cleanRun" style="padding:8px 12px">备份并清理</button>' +
+  '<button id="cleanRestore" style="padding:8px 12px">回滚最近一次</button>' +
+  '<button id="cleanRefresh" style="padding:8px 12px">重新读取</button></div>' +
+  '<div id="cleanSnaps" style="margin-top:6px;font-size:12px">—</div>';
+window.bindCloudClean = function () {
+  const r = document.getElementById("cleanRun");
+  const rs = document.getElementById("cleanRestore");
+  const rf = document.getElementById("cleanRefresh");
+  if (r) r.addEventListener("click", cleanRun);
+  if (rs) rs.addEventListener("click", cleanRestore);
+  if (rf) rf.addEventListener("click", () => { loadClean().catch(() => {}); });
+};
+
+async function loadClean() {
+  const host = document.getElementById("cleanList");
+  host.innerHTML = '<div class="empty">读取中…</div>';
+  await paint();
+  const r = await exec('sh "' + MODDIR + '/cloudclean.sh" status');
+  const out = r.stdout || "";
+  // 解析「云控残留」段： 存在 <name> <size> B <time>
+  const items = [];
+  let inList = false;
+  for (const ln of out.split("\n")) {
+    if (ln.indexOf("=== 云控残留") >= 0) { inList = true; continue; }
+    if (inList && ln.indexOf("===") >= 0) break;
+    const m = ln.match(/存在\s+(\S+)\s+(\d+)\s+B/);
+    if (m) items.push({ name: m[1], size: +m[2] });
+  }
+  cleanLoaded = true;
+  renderClean(items);
+
+  // 快照信息（list）
+  const lr = await exec('sh "' + MODDIR + '/cloudclean.sh" list 2>/dev/null');
+  const lns = (lr.stdout || "").split("\n");
+  const snaps = lns.filter(x => /^\s*\d{8}-\d{6}/.test(x));
+  const latestLn = lns.filter(x => x.indexOf("最新：") >= 0)[0];
+  cleanLastSnap = latestLn
+    ? latestLn.split("：")[1].trim()
+    : (snaps.length ? snaps[snaps.length - 1].trim().split(/\s+/)[0] : "");
+  document.getElementById("cleanSnaps").textContent =
+    cleanLastSnap ? ("最近快照：" + cleanLastSnap + "（共 " + snaps.length + " 个）")
+                  : "尚无快照（清理时会自动创建）";
+}
+
+function renderClean(items) {
+  const host = document.getElementById("cleanList");
+  if (!host) return;
+  const n = items.length;
+  if (!n) { host.innerHTML = '<div class="empty">没有残留，无需清理。</div>'; return; }
+  host.innerHTML = "";
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "prow";
+    row.innerHTML = '<div class="pb"><div class="pn">' + esc(it.name) +
+      '</div><div class="ps">' + it.size + ' B</div></div>';
+    host.appendChild(row);
+  }
+}
+
+async function cleanRun() {
+  const btn = document.getElementById("cleanRun");
+  if (!confirm("将备份后清理云控残留文件。\n清理前会自动创建可回滚的快照，确定继续？")) return;
+  btn.disabled = true; btn.textContent = "清理中…";
+  try {
+    showLoad("正在备份并清理云控残留…");
+    setStep("备份 → 校验 → 停止宿主 → 删除");
+    await paint();
+    const r = await exec('sh "' + MODDIR + '/cloudclean.sh" clean');
+    const out = r.stdout || "";
+    await loadClean().catch(() => {});
+    const m = out.match(/删除 (\d+) 个，失败 (\d+) 个/);
+    if (m) {
+      cleanLastSnap = (out.match(/快照保留在：(\S+)/) || [])[1] || cleanLastSnap;
+      endLoad(true, "已清理 " + m[1] + " 个" + (+m[2] ? "（失败 " + m[2] + "）" : ""));
+      toast("已清理并保留快照");
+    } else {
+      endLoad(false, "清理未完成（详见日志）");
+    }
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+  } finally {
+    btn.disabled = false; btn.textContent = "备份并清理";
+  }
+}
+
+async function cleanRestore() {
+  const btn = document.getElementById("cleanRestore");
+  if (!confirm("把云控残留文件回滚到最近一次快照？\n当前状态会先另存一份，可再次回退。")) return;
+  btn.disabled = true; btn.textContent = "回滚中…";
+  try {
+    showLoad("正在回滚云控残留…");
+    setStep("校验快照 → 停止宿主 → 还原");
+    await paint();
+    const r = await exec('sh "' + MODDIR + '/cloudclean.sh" restore 2>&1');
+    const out = r.stdout || "";
+    await loadClean().catch(() => {});
+    const m = out.match(/还原 (\d+) 个，异常 (\d+) 个/);
+    if (m) { endLoad(true, "已还原 " + m[1] + " 个"); toast("已回滚"); }
+    else { endLoad(false, "回滚未完成（详见日志）"); }
+  } catch (e) {
+    endLoad(false, "失败：" + (e && e.message ? e.message : e));
+  } finally {
+    btn.disabled = false; btn.textContent = "回滚最近一次";
+  }
+}
+
+/* ---------- Boot ---------- */
+(async function main() {
+  try {
+    if (window.ksu && ksu.fullScreen) { try { ksu.fullScreen(true); } catch (e) {} }
+    await loadState();
+    await loadSelection();
+    render();
+    document.getElementById("sub").textContent =
+      "已安装 " + installed.size + " 个包 · 当前已禁用 " + disabled.size + " 个";
+  } catch (e) {
+    document.getElementById("groups").innerHTML =
+      '<div class="loading">读取失败：' + esc(e && e.message ? e.message : e) + '</div>';
+  }
+  document.getElementById("apply").addEventListener("click", apply);
+  document.getElementById("reset").addEventListener("click", reset);
+
+  // 分组明细面板
+  document.getElementById("sheetMask").addEventListener("click", closeSheet);
+  document.getElementById("sheetAll").addEventListener("click", (e) => e.stopPropagation());
+  document.getElementById("sheetAll").addEventListener("change", (e) => {
+    if (sheetGi < 0) return;
+    const on = e.target.checked;
+    for (const it of CATALOG[sheetGi].items) {
+      if (!installed.has(it.pkg)) continue;
+      if (on) selected.add(keyOf(it)); else selected.delete(keyOf(it));
+    }
+    buildSheetBody();
+    refreshCap(sheetGi);
+    updateCount();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+  // 内存面板
+  document.getElementById("memClean").addEventListener("click", memClean);
+  document.getElementById("memRefresh").addEventListener("click", async () => {
+    await loadMemOverview().catch(() => {});
+    await loadMemDetail().catch(() => {});
+  });
+  document.getElementById("tabMem").addEventListener("click", () => {
+    memTab = "A";
+    document.getElementById("tabMem").classList.add("on");
+    document.getElementById("tabCpu").classList.remove("on");
+    renderDetail();
+  });
+  document.getElementById("tabCpu").addEventListener("click", () => {
+    memTab = "C";
+    document.getElementById("tabCpu").classList.add("on");
+    document.getElementById("tabMem").classList.remove("on");
+    renderDetail();
+  });
+  try { await loadMemOverview(); } catch (e) {}
+  // 内存总览每 10 秒刷新（避免频繁 exec 抢主线程）
+  setInterval(() => {
+    if (!ovBusy) loadMemOverview().catch(() => {});
+  }, 10000);
+
+  // 温控性能
+  document.getElementById("cpulTemp").addEventListener("input", () => {
+    document.getElementById("cpulTempTag").textContent = fmtTempC();
+    cpulSyncPreset();
+    updateCpulBtn();
+  });
+  const setTemp = (v) => {
+    document.getElementById("cpulTemp").value = v;
+    document.getElementById("cpulTempTag").textContent = (v / 1000).toFixed(1) + "°C";
+    cpulSyncPreset(); updateCpulBtn();
+  };
+  document.getElementById("cpulPresetCool").addEventListener("click", () => setTemp(50000));
+  document.getElementById("cpulPresetStd").addEventListener("click", () => setTemp(55000));
+  document.getElementById("cpulPresetHot").addEventListener("click", () => setTemp(60000));
+  document.getElementById("cpulZoneSkin").addEventListener("click", () => { cpulZone = "skin-msm-therm"; cpulSyncZoneTab(); updateCpulBtn(); });
+  document.getElementById("cpulZoneShell").addEventListener("click", () => { cpulZone = "shell_front"; cpulSyncZoneTab(); updateCpulBtn(); });
+  const setMode = (m) => { cpulMode = m; cpulSyncModeTab(); updateCpulBtn(); };
+  document.getElementById("cpulModeGlobal").addEventListener("click", () => setMode("global"));
+  document.getElementById("cpulModeGame").addEventListener("click", () => setMode("game"));
+  document.getElementById("cpulModeApps").addEventListener("click", () => setMode("apps"));
+  document.getElementById("cpulPickApps").addEventListener("click", openAppPicker);
+  document.getElementById("cpulApply").addEventListener("click", cpulApplyConf);
+  document.getElementById("cpulStop").addEventListener("click", cpulStop);
+  document.getElementById("cpulRefresh").addEventListener("click", () => { loadCpul().catch(() => {}); });
+  renderFuncGrid();
+})();
+</script>
+</body>
+</html>

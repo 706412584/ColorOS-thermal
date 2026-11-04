@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/KernelSU-Modules/tools/main/schemas/module.schema.json
+schemaVersion: 1
+id: oplus-cloud-block
+name: ColorOS 温控与云控
+summary: 解除 ColorOS/一加出厂 CPU 频率上限（大核 58%→100%），拦截 OTA 与云控，带温度保护与内存面板。
+description: README.md
+license: MIT
+homepage: https://github.com/706412584/ColorOS-thermal
+support: https://github.com/706412584/ColorOS-thermal/issues
+tags: [performance, system, tools]
+icon: assets/icon.png
+metamodule: false
+authors:
+  - name: 谋事在人成事在天
+    url: https://github.com/706412584
+compatibility:
+  androidMinApi: 29
+  architectures: [arm64-v8a, armeabi-v7a]
+release:
+  assetPattern: "oplus-cloud-block-*.zip"

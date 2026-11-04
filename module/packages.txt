@@ -1,0 +1,24 @@
+# 本模块要禁用的包清单（当前为设备上实际生效的一份）。
+# 每行一个包名；以 # 开头的行为注释，行尾 # 之后的内容会被忽略。
+#
+# 未安装的包会被静默跳过，因此这份清单可跨 ROM 版本共用。
+# 要取消某项，删除对应行并重启即可（模块从不会主动启用任何包）。
+#
+# 注：在 WebUI 里点「应用」会用界面上的勾选重写本文件。
+
+# --- 系统更新 ---
+com.oplus.ota              # 系统更新客户端（检查/下载/提示升级）
+com.oplus.romupdate        # 整包 ROM 更新服务
+com.oplus.cota             # 运营商 OTA（COTA）
+com.oplus.sau              # 系统应用更新服务（云控下发通道）
+com.oplus.sauhelper        # SAU 更新执行器
+
+# --- 云控与遥测 ---
+# com.heytap.htms 是「云控 + OPPO 账号 + 支付 + 游戏联运」共用的宿主包。
+# 禁用整包会导致：三国杀等联运游戏无法登录、账号相关功能失效。
+# 因此只禁用它的云控通道组件（写成「包名/类名」），包本身保持启用。
+com.heytap.htms/com.heytap.msp.cloudctrl.ipc.CloudCtrlService
+com.heytap.htms/com.heytap.cloudconfig.v3.kit.ipc.CloudCtrlV3Service
+com.heytap.htms/com.heytap.msp.cloudctrlreport.service.CloudConfigReportService
+com.oplus.statistics.rom   # ROM 级埋点与统计上报
+com.oplus.pantanal.ums     # 桌面卡片云配置下发
