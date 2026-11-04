@@ -628,6 +628,7 @@ function buildAboutCap() {
     '<div class="cdesc">云控拦截 · 温控性能 · 内存面板，全部本地实现，数据不出设备。</div>' +
     '<div class="meta"><span>酷安@谋事在人成事在天</span><span>纯本地</span><span>无联网</span>' +
       '<span id="aboutChangelog" style="cursor:pointer;color:var(--accent);font-weight:600">更新日志 ›</span>' +
+      '<span id="aboutRepo" style="cursor:pointer;color:var(--accent);font-weight:600">复制仓库地址</span>' +
     '</div>';
 
   const qq = document.createElement("div");
@@ -662,6 +663,17 @@ function buildAboutCap() {
   // 「更新日志」点开在底部面板显示 CHANGELOG.md
   const cl = left.querySelector("#aboutChangelog");
   if (cl) cl.addEventListener("click", (e) => { e.stopPropagation(); openChangelog(); });
+  // 「复制仓库地址」
+  const rp = left.querySelector("#aboutRepo");
+  if (rp) rp.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const url = "https://github.com/706412584/ColorOS-thermal";
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(url);
+      else { const ta = document.createElement("textarea"); ta.value = url; ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); }
+      toast("已复制：" + url);
+    } catch (err) { toast(url); }
+  });
   return cap;
 }
 
