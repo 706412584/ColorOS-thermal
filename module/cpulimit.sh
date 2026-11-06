@@ -556,19 +556,33 @@ why_state() {
   # 两次结果还可能不一样（别的链路在翻转），导致同屏数据自相矛盾。
   [ -n "$CAP_FREQ" ] || { sample_caps; compute_capped; }
   local cap=$CAP_INFO full="否"; [ "$CAPPED" = 0 ] && full="是"
+
+  # ★ 本模式下现在是否「应该」满频。不满足时频率被压是设计如此
+  #（如「仅游戏」模式没开游戏，节点本来就被还原成出厂值），
+  # 不能报「被压」—— 否则用户一打开 WebUI（游戏必然不在前台）就看到
+  # 「待命（本层未解除），且实际频率被压」，自相矛盾还以为模块坏了。
+  local want=1 cur=""
+  case "$MODE" in
+    game) [ -n "$GAME_FG" ] || want=0 ;;
+    apps) cur=$(top_pkg)
+          if [ -z "$cur" ] || ! app_selected "$cur"; then want=0; fi ;;
+  esac
+
   if [ "$t" -ge "$EFF_TEMP" ] 2>/dev/null; then
     echo "$wn $(mC "$t") 已超阈值 $(mC "$EFF_TEMP")，已收回保护"; return
   fi
   if is_hot; then
     echo "过热保护中 · $wn $(mC "$t")，降到 $(mC $((EFF_TEMP - HYST))) 以下恢复"; return
   fi
-  # 已经解锁但实际没顶到上限 → 别处还有一层在压，这条优先于下面的模式判定。
+  # 只有「本应满频」时，才把实际情况（含被别的链路压着）报出来。
   # 文案里的数字要和 status 的 CAP_FREQ 一致（同一个 $cap，来自同一次采样）。
-  if [ "$unl" = 是 ] && [ "$full" = 否 ]; then
-    echo "本层已解除，但实际频率仍被压（$cap）· 另有链路在限制，不是本模块能解的"; return
-  fi
-  if [ "$unl" = 否 ] && [ "$full" = 否 ]; then
-    echo "待命（本层未解除），且实际频率被压（$cap）"; return
+  if [ "$want" = 1 ]; then
+    if [ "$unl" = 是 ] && [ "$full" = 否 ]; then
+      echo "本层已解除，但实际频率仍被压（$cap）· 另有链路在限制，不是本模块能解的"; return
+    fi
+    if [ "$unl" = 否 ] && [ "$full" = 否 ]; then
+      echo "本应满频，但本层未解除且频率被压（$cap）"; return
+    fi
   fi
   case "$MODE" in
     game)
@@ -577,7 +591,6 @@ why_state() {
       elif [ "$unl" = 是 ]; then echo "游戏刚切到后台，15 秒内收回"
       else echo "待命 · 游戏在前台时满频"; fi ;;
     apps)
-      local cur; cur=$(top_pkg)
       if [ -z "$cur" ]; then echo "待命 · 取不到前台应用"
       elif app_selected "$cur"; then
         [ "$full" = 是 ] && echo "前台 $cur 已勾选，已满频" || echo "前台 $cur 已勾选，但实际频率被压（$cap）"

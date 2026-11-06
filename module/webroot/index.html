@@ -123,6 +123,14 @@
   .sheet-head .gsum{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .sheet-body{overflow-y:auto;-webkit-overflow-scrolling:touch;
     padding-bottom:calc(env(safe-area-inset-bottom) + 14px)}
+  /* 更新日志：每个版本折叠到固定高度，超出显示三角展开 */
+  .clbody{overflow:hidden;transition:max-height .18s ease}
+  .clbody.clipped{-webkit-mask-image:linear-gradient(180deg,#000 68%,transparent);
+                  mask-image:linear-gradient(180deg,#000 68%,transparent)}
+  .clmore{display:flex;align-items:center;justify-content:center;gap:5px;
+    margin:2px 0 4px;font-size:12.5px;color:var(--accent);cursor:pointer;
+    padding:5px 0;border-radius:8px;user-select:none}
+  .clmore .tri{font-size:9px;line-height:1}
   .gchk{appearance:none;width:19px;height:19px;flex:0 0 19px;margin:0;
     border:1.6px solid var(--muted);border-radius:5px;position:relative;
     background:transparent;transition:.14s;cursor:pointer}
@@ -914,20 +922,72 @@ async function openChangelog() {
   const box = document.createElement("div");
   box.id = "fnHolder";
   box.style.cssText = "padding:4px 14px 18px;font-size:13px;line-height:1.6";
+  const groups = [];
   if (!md) {
     box.innerHTML = '<div class="empty">暂无更新日志</div>';
   } else {
-    box.innerHTML = md.split("\n").map(line => {
+    // 按版本切块：一个「## vX」标题 + 它下面的条目归一组，组内折叠到固定高度。
+    // 每个版本单独限高，超出的部分点三角展开（否则最新一版几十条会把面板撑得很长，
+    // 想找旧版本要滑很久）。
+    for (const line of md.split("\n")) {
       const t = line.trim();
-      if (/^##\s+/.test(t)) return '<div style="font-size:14.5px;font-weight:700;margin:14px 0 5px;color:var(--accent)">' + esc(t.replace(/^##\s+/, "")) + '</div>';
-      if (/^#\s+/.test(t))  return '<div style="font-size:16px;font-weight:700;margin:6px 0 8px">' + esc(t.replace(/^#\s+/, "")) + '</div>';
-      if (/^[-*]\s+/.test(t)) return '<div style="margin:3px 0 3px 2px">• ' + inlineMd(t.replace(/^[-*]\s+/, "")) + '</div>';
-      if (!t) return "";
-      return '<div style="margin:3px 0">' + inlineMd(t) + '</div>';
-    }).join("");
+      if (/^##\s+/.test(t)) { groups.push({ title: t.replace(/^##\s+/, ""), body: [] }); continue; }
+      if (groups.length) groups[groups.length - 1].body.push(line);
+    }
+    const head = md.split("\n").filter(l => /^#\s+/.test(l.trim()) && !/^##\s+/.test(l.trim()))
+      .map(l => '<div style="font-size:16px;font-weight:700;margin:6px 0 8px">' + esc(l.trim().replace(/^#\s+/, "")) + '</div>').join("");
+    if (!groups.length) {
+      // 没有 ## 分节时退回整篇渲染，不做折叠
+      box.innerHTML = md.split("\n").map(line => {
+        const t = line.trim();
+        if (/^#\s+/.test(t)) return '<div style="font-size:16px;font-weight:700;margin:6px 0 8px">' + esc(t.replace(/^#\s+/, "")) + '</div>';
+        if (/^[-*]\s+/.test(t)) return '<div style="margin:3px 0 3px 2px">• ' + inlineMd(t.replace(/^[-*]\s+/, "")) + '</div>';
+        if (!t) return "";
+        return '<div style="margin:3px 0">' + inlineMd(t) + '</div>';
+      }).join("");
+    } else {
+      box.innerHTML = head + groups.map((g, i) => {
+        const body = g.body.map(line => {
+          const t = line.trim();
+          if (/^[-*]\s+/.test(t)) return '<div style="margin:3px 0 3px 2px">• ' + inlineMd(t.replace(/^[-*]\s+/, "")) + '</div>';
+          if (!t) return "";
+          return '<div style="margin:3px 0">' + inlineMd(t) + '</div>';
+        }).join("");
+        return '<div class="clgroup">' +
+          '<div style="font-size:14.5px;font-weight:700;margin:14px 0 5px;color:var(--accent)">' + esc(g.title) + '</div>' +
+          '<div class="clbody" id="clbody' + i + '">' + body + '</div>' +
+          '<div class="clmore" id="clmore' + i + '" style="display:none">' +
+            '<span class="tri">▼</span> 展开全部</div>' +
+        '</div>';
+      }).join("");
+    }
   }
+  // ★ 必须先插入 DOM 再量高度。box 在 DOM 之外时 getElementById 查不到、
+  //   scrollHeight 也恒为 0，折叠会静默失效（踩过）。
   wrap.innerHTML = "";
   wrap.appendChild(box);
+  if (md) bindChangelogFold(groups);
+}
+
+// 更新日志折叠：每个版本组内容超过 CL_MAX 才限高并显示三角，点三角展开/收起。
+// 在元素已进 DOM 之后调用。
+function bindChangelogFold(groups) {
+  const CL_MAX = 210;
+  for (let i = 0; i < groups.length; i++) {
+    const b = document.getElementById("clbody" + i);
+    const m = document.getElementById("clmore" + i);
+    if (!b || !m) continue;
+    if (b.scrollHeight <= CL_MAX + 20) continue;   // 内容本来就不高，不加折叠
+    b.style.maxHeight = CL_MAX + "px";
+    b.classList.add("clipped");
+    m.style.display = "flex";
+    m.addEventListener("click", () => {
+      const clipped = b.classList.toggle("clipped");
+      b.style.maxHeight = clipped ? (CL_MAX + "px") : "";
+      m.innerHTML = clipped ? '<span class="tri">▼</span> 展开全部'
+                            : '<span class="tri">▲</span> 收起';
+    });
+  }
 }
 // CHANGELOG 里只用到 **粗体**
 function inlineMd(s) {
@@ -1050,7 +1110,12 @@ async function loadFuncSums() {
     const tt = t ? " · " + (t / 1000).toFixed(1) + "°C" + (zt === "cpu" ? "(CPU)" : "") : "";
     const unl = /当前上限：.*9999999/.test(c);
     const cap = /^CAPPED=1$/m.test(c);
-    if (unl && cap) setFuncSum("cpul", "被压制" + tt, "warn");
+    // 只有在「本应满频」时才提示被压，否则「仅游戏」模式没开游戏时会误报
+    const fg = (c.match(/前台游戏 = (\S+)/) || [])[1] || "";
+    const md = (c.match(/MODE=(\w+)/) || [])[1] || "game";
+    if (unl && cap && (md === "global" || (md === "game" && fg && fg !== "无"))) {
+      setFuncSum("cpul", "被压制" + tt, "warn");
+    }
     else if (unl) setFuncSum("cpul", "满频" + tt, "on");
     else setFuncSum("cpul", "待命" + tt, "warn");
   }
@@ -1742,26 +1807,33 @@ function renderCpul(st) {
     for (const id of ["cpulApply", "cpulStop"]) { const b = document.getElementById(id); if (b) b.disabled = true; }
     return;
   }
+  // 只在「本应满频」时才用 CAPPED 报「被别的链路压着」。
+  // 「仅游戏」模式没开游戏时节点本来就被还原、频率也低，那是设计如此，
+  // 报成"被压"会让用户一打开 WebUI（游戏必然不在前台）就以为模块坏了。
+  const fgName = ((st.match(/前台游戏 = (\S+)/) || [])[1] || "");
+  const mode = cpulConf.MODE || "game";
+  const shouldBeHot = mode === "global"? /状态：运行中/.test(st)
+    : (mode === "game" ? (fgName && fgName !== "无") : false);
   if (!running) { setDot("cpulDot", "off"); document.getElementById("cpulState").textContent = "未开启"; }
   // 解锁了但实际频率没顶到上限 → 报"已解除，仍有别的限制"，而不是"已满频"。
   // 这是最容易被误解的状态（截图看着满频、数字只有一两成）。
-  else if (unlocked && capped) { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "已解除，但被别的链路压着"; }
+  else if (unlocked && capped && shouldBeHot) { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "已解除，但被别的链路压着"; }
   else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "已满频"; }
   else { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = hint || "待命（条件未满足）"; }
   cpulSyncModeTab();
   updateCpulBtn();
   // 底部一行说明：原来直接贴 status 原文（8 个核心的原始数值），看不懂。改成人话。
-  const fg = ((st.match(/前台游戏 = (\S+)/) || [])[1] || "");
   const gameOff = /disable_cpufreq_limit=1/.test(st);
   const bak = ((st.match(/出厂备份：(.*)/) || [])[1] || "").trim();
   const big = (bak.match(/7:(\d+)/) || [])[1];
   document.getElementById("cpulInfo").textContent = [
-    "前台游戏：" + (fg && fg !== "无" ? grecName(fg) : "无"),
+    "前台游戏：" + (fgName && fgName !== "无" ? grecName(fgName) : "无"),
     "游戏场景限频：" + (gameOff ? "已解除" : "系统控制"),
     big ? "出厂大核上限 " + (big / 1000000).toFixed(2) + " GHz" : "",
     // 被别的链路压着时，把这个事实摆在最显眼的一行里，避免"看着满频其实很低"。
+    // 只在「本应满频」时才提示（理由同上面的 shouldBeHot）。
     // CAP_INFO 形如 "0:72% 3:82%"，冒号前是核心组的 policy 号，写明单位免得看不懂。
-    (capped && capInfo) ? "实际被压到：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
+    (capped && capInfo && shouldBeHot) ? "实际被压到：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
   ].filter(Boolean).join(" · ");
 }
 
