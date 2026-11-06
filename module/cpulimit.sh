@@ -24,7 +24,10 @@ export PATH
 MODDIR=${0%/*}
 CONF="$MODDIR/cpulimit.conf"
 FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
+# 老内核（如 4.14）上同一个节点在 /sys/module 下
+[ -e "$FREQ" ] || FREQ=/sys/module/msm_performance/parameters/cpu_max_freq
 GAMEPID=/proc/game_opt/game_pid
+TOP_PROCS=/dev/cpuset/top-app/cgroup.procs
 PIDFILE=/data/adb/oplus-cpulimit.pid
 LOG=/data/adb/oplus-cloud-block.log
 DATA=/data/adb/oplus-cloud-block-data
@@ -38,44 +41,104 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [CPU上限] $*" >>"$LOG"; }
 
 # ---- 默认配置 ----
 ENABLE=1
-TEMP=55000          # 触发收回的温度阈值，毫摄氏度。55000 = 55.0°C
-ZONE=skin-msm-therm # 保护监视的温区。默认 skin-msm-therm（机身表面=体感温度）。
-                    # 注意：不要用 shell_front —— 实测游戏满频时 shell_front 仅 39.7°C
-                    # 而机身已 54°C，用它会形同虚设。
+TEMP=55000          # 触发收回的温度阈值（机身/外壳类温区），毫摄氏度。55000 = 55.0°C
+TEMP_CPU=80000      # CPU 结温类温区的阈值，毫摄氏度。80000 = 80.0°C
+                    # ★ 必须与 TEMP 分开：CPU 结温天然比机身高得多。实测静置 ~50°C、
+                    #   满频可到 90°C+，而同期外壳只有 37~40°C。共用 55°C 会在刚开游戏几秒就收回。
+ZONE=skin-msm-therm # 保护监视的温区（首选）。默认 skin-msm-therm（机身表面=体感温度）。
+                    # 本机没有时按 ZONE_FALLBACK 依次找替补，实际用到的温区名放 ZONE_USED。
+                    # 注意：不要用 shell_front/shell_back —— 实测游戏满频时它们仅 37~40°C
+                    # （新机型上三个 shell_* 甚至同值、完全不动），用它们形同虚设。
+                    # 替补优先 CPU 结温（cpu-0-*/cpullc-*/cpu_big*/soc_max，随负载真动），
+                    # 此时阈值自动切到 TEMP_CPU。
 MODE=game           # global = 全局常开；game = 仅检测到游戏时开
 HYST=3000           # 滞回，毫摄氏度。降到 TEMP-HYST 以下才恢复，防震荡
 
+# 去掉首尾空白和 \r，结果放 TRIMMED。用 shell 自带的分词，不 fork。
+# 本机每 fork 一次约 30ms，原来每行 printf|cut|tr + printf|cut|sed，一次读配置要 0.6s。
+CR=$(printf '\r')
+trim() {
+  set -f
+  local IFS=" 	$CR"
+  # shellcheck disable=SC2086
+  set -- $1
+  TRIMMED=$1
+  set +f
+}
+
 load_conf() {
   [ -f "$CONF" ] || return 0
-  while IFS= read -r raw; do
+  local raw line key val
+  while IFS= read -r raw || [ -n "$raw" ]; do
     line=${raw%%#*}
-    key=$(printf '%s' "$line" | cut -d= -f1 | tr -d ' \t\r\n')
-    val=$(printf '%s' "$line" | cut -d= -f2- | sed 's/^[ \t]*//; s/[ \t]*$//')
+    case "$line" in *=*) ;; *) continue ;; esac
+    trim "${line%%=*}"; key=$TRIMMED
+    trim "${line#*=}"; val=$TRIMMED
     case "$key" in
-      ENABLE) [ -n "$val" ] && ENABLE=$val ;;
-      TEMP)   [ -n "$val" ] && TEMP=$val ;;
-      ZONE)   [ -n "$val" ] && ZONE=$val ;;
-      MODE)   [ -n "$val" ] && MODE=$val ;;
-      HYST)   [ -n "$val" ] && HYST=$val ;;
+      ENABLE)   [ -n "$val" ] && ENABLE=$val ;;
+      TEMP)     [ -n "$val" ] && TEMP=$val ;;
+      TEMP_CPU) [ -n "$val" ] && TEMP_CPU=$val ;;
+      ZONE)     [ -n "$val" ] && ZONE=$val ;;
+      MODE)     [ -n "$val" ] && MODE=$val ;;
+      HYST)     [ -n "$val" ] && HYST=$val ;;
     esac
   done <"$CONF"
+  # 非数字/不合理的值回落默认，避免 [ -ge ] 比较报错导致判定失效
+  case "$TEMP" in ''|*[!0-9]*) TEMP=55000 ;; esac
+  case "$TEMP_CPU" in ''|*[!0-9]*) TEMP_CPU=80000 ;; esac
+  case "$HYST" in ''|*[!0-9]*) HYST=3000 ;; esac
+  [ "$HYST" -ge "$TEMP" ] && HYST=3000
+}
+
+# 持久化开关（stop 必须写 ENABLE=0，否则看护循环 120s 后会按 ENABLE=1 重新拉起）
+set_enable() { # $1 = 0|1
+  if [ ! -f "$CONF" ]; then
+    echo "ENABLE=$1" >"$CONF"
+  elif grep -q '^ENABLE=' "$CONF" 2>/dev/null; then
+    sed -i "s/^ENABLE=.*/ENABLE=$1/" "$CONF"
+  else
+    { echo "ENABLE=$1"; cat "$CONF"; } >"$CONF.tmp" && mv -f "$CONF.tmp" "$CONF"
+  fi
 }
 
 # ---- 原值备份 ----
+# 备份内容必须是"有效的出厂值"：空串或含 9999999（已解锁状态）都不算，
+# 否则以后的"还原"会写空值（内核拒收）或写回解锁值（等于没还原）。
+valid_orig() { case "$1" in ''|*9999999*) return 1 ;; *) return 0 ;; esac; }
+
 ensure_backup() {
-  [ -f "$BAK" ] && return 0
+  if [ -f "$BAK" ]; then
+    valid_orig "$(cat "$BAK" 2>/dev/null)" && return 0
+    rm -f "$BAK"; log "备份内容无效，已丢弃"
+  fi
+  local cur; cur=$(sed 's/[[:space:]]*$//' "$FREQ" 2>/dev/null)
+  if ! valid_orig "$cur"; then
+    log "当前上限为空或已是解锁值，跳过备份（还原时用出厂兜底值）"
+    return 0
+  fi
   mkdir -p "$DATA" 2>/dev/null
-  cat "$FREQ" >"$BAK" 2>/dev/null
-  [ -f "$BAK" ] && log "已备份出厂上限 -> $BAK"
+  printf '%s' "$cur" >"$BAK" 2>/dev/null && log "已备份出厂上限 -> $BAK"
 }
 
-# 读取备份原值（剥尾部空白；若缺失用出厂兜底）
+# 读取备份原值（剥尾部空白；缺失或无效用出厂兜底）
 orig_value() {
-  if [ -f "$BAK" ]; then
-    sed 's/[[:space:]]*$//' "$BAK" 2>/dev/null
-  else
-    printf '%s' "$FACTORY"
-  fi
+  local v; v=$(sed 's/[[:space:]]*$//' "$BAK" 2>/dev/null)
+  if valid_orig "$v"; then printf '%s' "$v"; else factory_value; fi
+}
+
+# 没有有效备份时的兜底。写死的 FACTORY 是 Ace 2 Pro（PJA110）实测值，只在本机型用；
+# 其他机型用每个核心的硬件上限（cpuinfo_max_freq）—— 不会把别的机型压到比出厂更低。
+factory_value() {
+  case "$(getprop ro.product.model)" in
+    PJA110) printf '%s' "$FACTORY"; return ;;
+  esac
+  local c n out="" m
+  for c in /sys/devices/system/cpu/cpu[0-9]*; do
+    n=${c##*cpu}; m=""
+    read -r m 2>/dev/null <"$c/cpufreq/cpuinfo_max_freq"
+    [ -n "$m" ] && out="$out${out:+ }$n:$m"
+  done
+  printf '%s' "${out:-$FACTORY}"
 }
 
 # ---- 写上限 ----
@@ -112,7 +175,7 @@ restore_freq() {
 GAMEDIS=/proc/game_opt/disable_cpufreq_limit
 enable_game()  { printf '1' >"$GAMEDIS" 2>/dev/null; }
 disable_game() { printf '0' >"$GAMEDIS" 2>/dev/null; }
-game_opt_ok()  { [ "$(cat "$GAMEDIS" 2>/dev/null)" = "1" ]; }
+game_opt_ok()  { local v=""; read -r v 2>/dev/null <"$GAMEDIS"; [ "$v" = "1" ]; }
 
 # 只读锁是否在位（用权限位字符串判断，不依赖 -w —— root 下 -w 不可靠）
 node_readonly() {
@@ -123,75 +186,314 @@ node_readonly() {
 }
 
 is_unlocked() {
-  v=$(cat "$FREQ" 2>/dev/null)
+  local v=""; read -r v 2>/dev/null <"$FREQ"
   case "$v" in *9999999*) return 0 ;; *) return 1 ;; esac
 }
 
-# ---- 温度 ----
-find_zone() { # $1 = type 名
-  for z in /sys/class/thermal/thermal_zone*; do
-    [ "$(cat "$z/type" 2>/dev/null)" = "$1" ] && { echo "${z##*thermal_zone}"; return; }
+# 本模块这层是否已在位（节点=解锁值 且 只读锁在）。守护的判断仍以此为准 ——
+# 每 5 秒一拍，这里绝不能 fork，所以只用内建 read + 权限位字符串。
+# 注意：这 != "实际已满频"。节点在位但实际频率被别的链路压着是可能的
+#（实测 Ace 2 Pro 的 OMRG、PLK110 都出现过），所以给用户看的文案不能只凭它。
+
+# 采一小段时间，得到每个 policy 的"最低上限"。
+# ★ 为什么不能只读一次：别的链路（如 OMRG）会在 state=0/1/2 之间每秒翻转几百次，
+#   单次快照有大约 1/10 的概率正好抓到它放开的瞬间，从而误报"没被压"
+#   （实测连测 4 次里出现过 1 次 CAPPED=0，而上限一直是 1459200）。
+#   取样本里的最小值才是稳定的结论。结果放 CAP_KEYS / CAP_MIN（"0 1459200" 这种行）。
+# 不进守护循环，所以这里的 fork 可以接受。
+CAP_KEYS=""; CAP_MIN=""
+sample_caps() {
+  CAP_KEYS=""; CAP_MIN=""; _cm_n=0
+  local p k v hw
+  # 先记录硬件上限与 keys
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    hw=""; read -r hw 2>/dev/null <"$p/cpuinfo_max_freq"
+    case "$hw" in ''|*[!0-9]*) continue ;; esac
+    [ "$hw" -gt 0 ] || continue
+    CAP_KEYS="$CAP_KEYS ${p##*/policy}:$hw"
+  done
+  [ -n "$CAP_KEYS" ] || return
+  # 采 10 次，每次记录各 policy 的 min。
+  # 采样密度不够会漏掉低频被压的簇（实测 policy7 在 5 次里可能一直没被压到，
+  # 而下一次采样就抓到了 57%），所以宁可多采几次。
+  local i=0
+  while [ $i -lt 10 ]; do
+    for p in /sys/devices/system/cpu/cpufreq/policy*; do
+      [ -d "$p" ] || continue
+      k=${p##*/policy}
+      case " $CAP_KEYS " in *" $k:"*) ;; *) continue ;; esac
+      v=""; read -r v 2>/dev/null <"$p/scaling_max_freq"
+      case "$v" in ''|*[!0-9]*) continue ;; esac
+      cur=$(printf '%s\n' "$CAP_MIN" | sed -n "s/^$k //p")
+      if [ -z "$cur" ] || [ "$v" -lt "$cur" ]; then
+        CAP_MIN=$(printf '%s\n' "$CAP_MIN" | grep -v "^$k " ; echo "$k $v")
+      fi
+    done
+    i=$((i+1)); [ $i -lt 10 ] && sleep 0.15
   done
 }
 
-# 保护温区读数（ZONE 指定，默认 skin-msm-therm）
-shell_temp() {
-  local zn; zn=$(find_zone "$ZONE")
-  [ -n "$zn" ] && cat "/sys/class/thermal/thermal_zone$zn/temp" 2>/dev/null
+# 任何 policy 的（最低）上限低于硬件上限吗。写入 CAPPED / CAP_INFO / CAP_FREQ。
+# 输出按 policy 号排序，保证同一状态下的文本稳定（否则每次顺序不同，不好比对）。
+compute_capped() {
+  CAPPED=0; CAP_INFO=""; CAP_FREQ=""
+  local k hw v pct
+  for k in $(printf '%s\n' "$CAP_MIN" | awk '{print $1}' | sort -n); do
+    hw=$(printf '%s\n' "$CAP_KEYS" | tr ' ' '\n' | sed -n "s/^$k://p")
+    v=$(printf '%s\n' "$CAP_MIN" | sed -n "s/^$k //p")
+    case "$hw$v" in ''|*[!0-9]*) continue ;; esac
+    [ "$hw" -gt 0 ] || continue
+    pct=$(awk -v a="$v" -v b="$hw" 'BEGIN{printf "%d%%", a*100/b}')
+    CAP_FREQ="$CAP_FREQ $k:$v/$hw($pct)"
+    [ "$v" -lt "$hw" ] || continue
+    CAPPED=1
+    CAP_INFO="$CAP_INFO $k:$pct"
+  done
+  CAP_INFO=${CAP_INFO# }
+  CAP_FREQ=${CAP_FREQ# }
 }
+
+# ---- 温度 ----
+# 全部用内建 read 读 sysfs，不 fork cat（本机温区很多，守护每 5s 一次）。
+find_zone() { # $1 = type 名
+  local z zt
+  for z in /sys/class/thermal/thermal_zone*; do
+    zt=""; read -r zt 2>/dev/null <"$z/type"
+    [ "$zt" = "$1" ] && { echo "${z##*thermal_zone}"; return; }
+  done
+}
+
+# 读保护温区（ZONE 指定，默认 skin-msm-therm），结果放进全局 T_NOW（读不到为空）。
+# 注意：必须直接调用、不能 $(read_temp) —— 子 shell 里写的缓存会丢。
+# 温区号缓存按 ZONE 名失效；缓存号的 type 对不上（温区重排）也会重查。
+#
+# ★ 替补分两级，级别决定阈值（这是关键，不能混）：
+#   CPU 结温类 —— 随负载真实上升，保护有效。用它时阈值取 TEMP_CPU。
+#     实测：静置 ~50°C，满频可到 90°C+。外壳同期只有 37~40°C。
+#  机身/外壳类 —— 数值低且可能整台机同值不动（新机型上三个 shell_* 常同值死值）。
+#     只在前者一个都没有时用，阈值取 TEMP。
+#
+# 三级顺序：用户配置的 ZONE > CPU 结温家族 > 机身/外壳家族。都找不到就读不到温度，
+# 守护保守地不解锁（宁可不解锁，也不要拿死值假装有保护）。
+#   skin-msm-therm：骁龙 8 Gen2 / Gen3 等（一加 Ace 2 Pro），机身表面
+#   cpu-0-* / cpullc-*：骁龙 8 Elite Gen5 起的 CPU 结温
+#   cpu_big* / cpu_little*：天玑 CPU 结温
+#   skin_ntc / shell_* / board_temp：OPLUS 外壳、主板（数值低，兜底）
+#
+# CPU 结温温区判定。按前缀匹配，因为同一台机的名字是 cpu-0-0-0 / cpu-0-3-1 / cpullc-1-0
+# （骁龙 8 Elite）或 cpu_big2 / cpu_little3（天玑），逐个枚举会漏。
+# ★ 必须排除 trip 点：PLK110 上 cpu-hw-trip-0 = 95000 是"门限值"不是温度，
+#   误选它会让模块永远以为 95°C、永不解锁。
+is_cpu_zone() {
+  case "$1" in
+    *trip*) return 1 ;;
+    cpu-*|cpullc-*|cpu_big*|cpu_little*|cpuss*|soc_max|soc_top|mtktscpu|mtkts_cpu) return 0 ;;
+  esac
+  return 1
+}
+# 机身/外壳类（数值低且可能整台机同值不动，只作最后兜底）
+is_skin_zone() {
+  case "$1" in
+    skin-msm-therm|skin_ntc|shell_*|board_temp|ap_ntc) return 0 ;;
+  esac
+  return 1
+}
+
+ZONE_NAME_C=""; ZONE_NUM_C=""; ZONE_USED=""; ZONE_T=""; T_NOW=""
+read_temp() {
+  local zt="" z zt2
+  [ -n "$ZONE_NUM_C" ] && read -r zt 2>/dev/null <"/sys/class/thermal/thermal_zone$ZONE_NUM_C/type"
+  if [ "$ZONE_NAME_C" != "$ZONE" ] || [ "$zt" != "$ZONE_USED" ]; then
+    ZONE_NAME_C=$ZONE; ZONE_USED=""; ZONE_NUM_C=""
+    # ① 用户配置的温区（按名字精确找）
+    ZONE_NUM_C=$(find_zone "$ZONE")
+    [ -n "$ZONE_NUM_C" ] && ZONE_USED=$ZONE
+    # ② 没有就扫全表：CPU 结温家族优先，其次机身/外壳家族
+    if [ -z "$ZONE_NUM_C" ]; then
+      for z in /sys/class/thermal/thermal_zone*; do
+        zt2=""; read -r zt2 2>/dev/null <"$z/type"
+        is_cpu_zone "$zt2" && { ZONE_NUM_C=${z##*thermal_zone}; ZONE_USED=$zt2; break; }
+      done
+      if [ -z "$ZONE_NUM_C" ]; then
+        for z in /sys/class/thermal/thermal_zone*; do
+          zt2=""; read -r zt2 2>/dev/null <"$z/type"
+          is_skin_zone "$zt2" && { ZONE_NUM_C=${z##*thermal_zone}; ZONE_USED=$zt2; break; }
+        done
+      fi
+    fi
+    zone_class "$ZONE_USED"
+  fi
+  T_NOW=""
+  [ -n "$ZONE_NUM_C" ] && read -r T_NOW 2>/dev/null <"/sys/class/thermal/thermal_zone$ZONE_NUM_C/temp"
+  case "$T_NOW" in *[!0-9-]*) T_NOW="" ;; esac
+}
+
+# 温区属于哪一级 → 该用哪个阈值。结果放 ZONE_T（skin / cpu）。
+zone_class() {
+  if is_cpu_zone "$1"; then ZONE_T=cpu; else ZONE_T=skin; fi
+}
+
+# 当前生效的基础阈值放进 EFF_BASE：CPU 结温温区用 TEMP_CPU，其余用 TEMP。
+# 不用 $(...) 取值：守护每 5s 一拍，本机每 fork 约 30ms，纯为取值不值得。
+eff_base() {
+  if [ "$ZONE_T" = cpu ]; then EFF_BASE=${TEMP_CPU:-80000}; else EFF_BASE=${TEMP:-55000}; fi
+}
+shell_temp() { read_temp; printf '%s' "$T_NOW"; }
 
 # 读任意温区（按 type 名）
 zone_temp() {
-  local zn; zn=$(find_zone "$1")
-  [ -n "$zn" ] && cat "/sys/class/thermal/thermal_zone$zn/temp" 2>/dev/null
+  local zn tv=""; zn=$(find_zone "$1")
+  [ -n "$zn" ] && read -r tv 2>/dev/null <"/sys/class/thermal/thermal_zone$zn/temp"
+  printf '%s' "$tv"
+}
+
+# ---- 过热滞回 ----
+# 超过 TEMP 收回后打标记，必须降到 TEMP-HYST 以下才清标记、允许再解锁，
+# 避免温度在阈值附近时每 5s 来回切换。标记只在状态切换时写，不会频繁写闪存。
+HOT_FLAG=/data/adb/oplus-cpulimit.hot
+is_hot() { [ -f "$HOT_FLAG" ]; }
+# 根据 T_NOW 更新标记；返回 0 = 处于过热保护中。
+# 阈值用 EFF_TEMP（由应该解锁判定算好：温区级别的基础阈值 + 前台游戏的单独阈值）。
+update_hot() {
+  local th=${EFF_TEMP:-${TEMP:-55000}}
+  if is_hot; then
+    if [ "$T_NOW" -lt $((th - HYST)) ] 2>/dev/null; then
+      rm -f "$HOT_FLAG"; log "$ZONE_USED 降到 ${T_NOW}，低于 $((th - HYST))，解除过热保护"
+      return 1
+    fi
+    return 0
+  fi
+  if [ "$T_NOW" -ge "$th" ] 2>/dev/null; then
+    : >"$HOT_FLAG"; log "$ZONE_USED ${T_NOW} 达到阈值 ${th}${GAME_LAST:+（$GAME_LAST）}，进入过热保护"
+    return 0
+  fi
+  return 1
 }
 
 # ---- 游戏检测 ----
 # 注意：toybox 的 sed 不支持 `\?`（可选匹配），必须用 `[0-9-]*` 吞掉负号。
 # 之前用 `\(-\?[0-9]*\)` 会导致模式失配、永远返回空 → 游戏检测永远为"无游戏"。
+# 文件内容形如 "game_pid=-1 child_num=0"。用内建 read + 参数展开，不 fork sed。
 game_pid_val() {
-  sed -n 's/.*game_pid=\([0-9-]*\).*/\1/p' "$GAMEPID" 2>/dev/null | head -1
+  local g=""; read -r g 2>/dev/null <"$GAMEPID"
+  case "$g" in *game_pid=*) g=${g#*game_pid=}; g=${g%%[!0-9-]*} ;; *) g="" ;; esac
+  echo "$g"
 }
 # 系统实时游戏检测（game_pid 仅当游戏独占前台时才置位；切到 WebUI 时会归零）
 sys_game() {
-  local g; g=$(game_pid_val)
-  [ -n "$g" ] && [ "$g" != "-1" ]
+  local g=""; read -r g 2>/dev/null <"$GAMEPID"
+  case "$g" in *game_pid=*) ;; *) return 1 ;; esac
+  g=${g#*game_pid=}; g=${g%%[!0-9-]*}
+  [ -n "$g" ] && [ "$g" != "-1" ] && [ "$g" != "0" ]
 }
-# ColorOS 已识别的游戏名单（两个来源，任一命中即算）：
-#   ① /data/oplus/uxicons/<pkg>/game_app.png（游戏空间收录过）
-#   ② settings 里的 GC_SETTING_SYSTEM_KEY_GAMESPACE_GAME_LAUNCH_TIME_<pkg>（启动过）
-GAME_ICON_DIR=/data/oplus/uxicons
+# ColorOS 已识别的游戏名单：settings 里的 GC_SETTING_SYSTEM_KEY_GAMESPACE_GAME_LAUNCH_TIME_<pkg>
+# （游戏空间记录过启动时间的应用）。
+# 不再用 /data/oplus/uxicons/<pkg>/game_app.png：实测豆包、豆包输入法也有这个图标，
+# 会被当成游戏 —— 输入法常驻后台，「仅游戏」模式就等于一直满频。
+# 没进名单的游戏在独占前台时仍会被系统 game_pid 识别。
 GAME_LIST_CACHE=/data/adb/oplus-cpulimit.games
 build_game_list() {
-  {
-    for d in "$GAME_ICON_DIR"/*/; do
-      [ -f "$d/game_app.png" ] && basename "$d"
-    done 2>/dev/null
-    settings list global 2>/dev/null \
-      | sed -n 's/^GC_SETTING_SYSTEM_KEY_GAMESPACE_GAME_LAUNCH_TIME_\([a-zA-Z0-9._]*\)=.*/\1/p'
-  } | sort -u >"$GAME_LIST_CACHE" 2>/dev/null
+  settings list global 2>/dev/null \
+    | sed -n 's/^GC_SETTING_SYSTEM_KEY_GAMESPACE_GAME_LAUNCH_TIME_\([a-zA-Z0-9._]*\)=.*/\1/p' \
+    | sort -u >"$GAME_LIST_CACHE.tmp" 2>/dev/null && mv -f "$GAME_LIST_CACHE.tmp" "$GAME_LIST_CACHE"
 }
-pkg_is_game() { # $1 = 包名
-  [ -n "$1" ] || return 1
+NL='
+'
+# 前台游戏的包名放进 GAME_FG（没有游戏在前台则为空，返回 1）：
+#   ① 系统 game_pid（游戏独占前台时置位）
+#   ② top-app cpuset 里有名单内的游戏
+# 只认前台：王者这类游戏退到后台后进程常驻，以前只看进程在不在，
+# 在桌面上也一直满频，白白耗电发热。全部用内建 read，不 fork。
+game_fg() {
+  GAME_FG=""
+  local g=""; read -r g 2>/dev/null <"$GAMEPID"
+  case "$g" in *game_pid=*) g=${g#*game_pid=}; g=${g%%[!0-9]*} ;; *) g="" ;; esac
+  local nm
+  if [ -n "$g" ] && [ "$g" != "0" ]; then
+    nm=""; IFS= read -r -d '' nm 2>/dev/null <"/proc/$g/cmdline"; nm=${nm%%:*}
+    [ -n "$nm" ] && { GAME_FG=$nm; return 0; }
+  fi
+  [ -r "$TOP_PROCS" ] || return 1
   [ -f "$GAME_LIST_CACHE" ] || build_game_list
-  grep -qxF "$1" "$GAME_LIST_CACHE" 2>/dev/null
-}
-# 综合判定（只看"游戏在不在跑"，不看前台 —— 否则在 WebUI 里查看时必然判为无游戏，形成悖论）：
-#   ① 系统 game_pid 已置位（游戏独占前台时最快）
-#   ② 名单内的游戏进程存在
-game_running() {
-  sys_game && return 0
-  [ -f "$GAME_LIST_CACHE" ] || build_game_list
-  while IFS= read -r pkg; do
-    [ -n "$pkg" ] || continue
-    if pidof "$pkg" >/dev/null 2>&1; then return 0; fi
-  done <"$GAME_LIST_CACHE"
+  local games="" l pid
+  while read -r l; do [ -n "$l" ] && games="$games$NL$l"; done 2>/dev/null <"$GAME_LIST_CACHE"
+  [ -n "$games" ] || return 1
+  while read -r pid; do
+    nm=""; IFS= read -r -d '' nm 2>/dev/null <"/proc/$pid/cmdline"; nm=${nm%%:*}
+    case "$nm" in *.*) ;; *) continue ;; esac
+    case "$games$NL" in *"$NL$nm$NL"*) GAME_FG=$nm; return 0 ;; esac
+  done <"$TOP_PROCS"
   return 1
 }
 
+# 守护用：带宽限的前台判定。短暂切出去（回个微信、下拉通知栏）GAME_GRACE 秒内
+# 仍按游戏在前台处理，避免满频来回切换。GAME_SEEN 只在守护进程内存里，WebUI 查询不带宽限。
+GAME_GRACE=15
+GAME_SEEN=""; GAME_LAST=""
+up_s() { local u=""; read -r u _ 2>/dev/null </proc/uptime; UP=${u%%.*}; }
+game_active() {
+  up_s
+  if game_fg; then GAME_LAST=$GAME_FG; GAME_SEEN=$UP; return 0; fi
+  [ -n "$GAME_SEEN" ] && [ $(( UP - GAME_SEEN )) -lt "$GAME_GRACE" ]
+}
+
+# 按游戏单独设的温度阈值 = 在「当前温区级别的基础阈值」上再偏移。
+# 不存绝对值的原因是：同一个"55°C"在机身温区(量程 30~60)和 CPU 结温(量程 50~95)上含义完全不同。
+# 所以存差值 DELTA（毫摄氏度，正=更宽松），WebUI 读数直接映射成「机身 52.0°C / 60.0°C」这种相对值。
+# 文件放数据目录（模块更新会整体替换模块目录，放这里不丢）。每行 "包名=差值" 或旧格式 "包名=绝对值"。
+# 兼容旧格式：值落在 45000~65000 是旧版 WebUI 写的绝对值，换算成相对 55000 的差值
+# （旧 UI 的可选范围就是 45~65、基准恒为 55，所以差值必然等于 v-55000，落在 ±10000 内）。
+# ★ 不能把旧绝对值直接当阈值用：在 CPU 结温档上"55°C"意味着刚开始玩就收回，等于关不掉。
+#   换算后意图不变（用户当初就是想比默认宽/紧几度），且换温区机器也合理。
+GAMETEMP_FILE=$DATA/gametemp.conf
+GAMETEMP_OLD_BASE=55000               # 旧版绝对值的隐含基准
+BIGGEST_DELTA=15000                   # 单个游戏最多能放宽多少
+
+game_temp() { # $1 = 包名；把 EFF_TEMP 改成「基础阈值 + 该游戏的差值」
+  [ -n "$1" ] && [ -f "$GAMETEMP_FILE" ] || return 0
+  local k v
+  while IFS='=' read -r k v; do
+    [ "$k" = "$1" ] || continue
+    v=${v%"$CR"}
+    case "$v" in ''|*[!0-9-]*) return 0 ;; esac
+    case "$v" in
+      -*) ;;
+      *) [ "$v" -ge 45000 ] && [ "$v" -le 65000 ] && v=$(( v - GAMETEMP_OLD_BASE )) ;;
+    esac
+    [ "$v" -gt "$BIGGEST_DELTA" ] && v=$BIGGEST_DELTA
+    [ "$v" -lt -20000 ] && v=-20000
+    EFF_TEMP=$(( EFF_BASE + v ))
+    return 0
+  done 2>/dev/null <"$GAMETEMP_FILE"
+}
+
 # ---- 前台应用 ----
-# 取当前前台包名。优先 dumpsys（准确），失败退回 /proc 里最活跃的 app 进程。
-TOP_FILE=/data/adb/oplus-cpulimit.top
+# 守护用：勾选的应用是否在前台。读 top-app cpuset 的进程列表（内建 read，不跑 dumpsys），
+# 进程名去掉 ":子进程" 后缀即包名。cpuset 不存在时退回 dumpsys。
+app_match() {
+  [ -f "$APPS_FILE" ] || return 1
+  if [ ! -r "$TOP_PROCS" ]; then
+    local cur; cur=$(top_pkg)
+    [ -n "$cur" ] && app_selected "$cur"
+    return
+  fi
+  local sel pid nm; sel=$(cat "$APPS_FILE" 2>/dev/null)
+  [ -n "$sel" ] || return 1
+  while read -r pid; do
+    nm=""; IFS= read -r -d '' nm 2>/dev/null <"/proc/$pid/cmdline"
+    nm=${nm%%:*}
+    case "$nm" in *.*) ;; *) continue ;; esac
+    case "
+$sel
+" in *"
+$nm
+"*) return 0 ;; esac
+  done <"$TOP_PROCS"
+  return 1
+}
+
+# 取当前前台包名（仅 WebUI 显示原因时用；dumpsys 较重，不放进守护循环）
 top_pkg() {
   local p
   p=$(dumpsys activity activities 2>/dev/null \
@@ -209,49 +511,79 @@ app_selected() { # $1 = 包名
   [ -f "$APPS_FILE" ] || return 1
   grep -qxF "$1" "$APPS_FILE" 2>/dev/null
 }
-app_match() {
-  local cur; cur=$(top_pkg)
-  [ -n "$cur" ] || return 1
-  printf '%s' "$cur" >"$TOP_FILE" 2>/dev/null
-  app_selected "$cur"
+# ---- 决策：现在应该解锁吗 ----
+# 阈值只有一个计算入口，避免守护 / WebUI / 日志算出不同的值。
+# 调用前需先 read_temp（tick 里做），这里直接用 T_NOW，避免一次 tick 读两遍温度。
+# need_game = 调用方是否还要 GAME_LAST 来判断游戏（WebUI 的 why_state 走 game_fg 自己算）。
+set_thresholds() {
+  eff_base                                  # EFF_BASE = 按温区级别定的基础阈值
+  EFF_TEMP=$EFF_BASE
+  case "$MODE" in
+    game) if [ "$1" = local ]; then game_active || return 1; fi
+          game_temp "$GAME_LAST" ;;
+    apps) if [ "$1" = local ]; then app_match || return 1; fi ;;
+  esac
+  return 0
 }
 
-# ---- 决策：现在应该解锁吗 ----
 should_unlock() {
-  local t; t=$(shell_temp)
   # 无温度读数 → 保守起见不解锁
-  [ -n "$t" ] || return 1
-  if [ "$t" -ge "$TEMP" ] 2>/dev/null; then
-    return 1        # 过热，收回
-  fi
-  case "$MODE" in
-    game) game_running ;;
-    apps) app_match ;;
-    *)    return 0 ;;   # global：温度 OK 即解锁
-  esac
+  [ -n "$T_NOW" ] || return 1
+  local want=0
+  if ! set_thresholds local; then want=1; fi
+  update_hot && return 1   # 过热保护中（含滞回），收回
+  return $want
 }
 
 # 毫摄氏度 -> "xx.x°C"
 mC() { awk -v v="$1" 'BEGIN{ if(v==""){print "?"; exit} printf "%.1f°C", v/1000 }'; }
 
 # 说明"当前为何是/不是满频"，供 WebUI 显示（一行中文）
+# 只读：不改过热标记（标记归守护管），否则 WebUI 刷新会和守护抢状态。
 why_state() {
-  local t; t=$(shell_temp)
+  read_temp
+  local t=$T_NOW
   [ -n "$t" ] || { echo "读不到温度"; return; }
-  if [ "$t" -ge "$TEMP" ] 2>/dev/null; then
-    echo "机身 $(mC "$t") 已超阈值 $(mC "$TEMP")，已收回保护"; return
+  GAME_LAST=""
+  [ "$MODE" = game ] && game_fg && GAME_LAST=$GAME_FG
+  set_thresholds web   # 不管前台条件，只算阈值
+  local wn="机身"; [ "$ZONE_T" = cpu ] && wn="CPU"
+  # 本模块这层是否在位（节点=解锁值），以及实际频率有没有真的顶到硬件上限。
+  # 两者要分开说：节点在位 ≠ 实际满频。实测 Ace 2 Pro(OMRG) 与 PLK110 上都出现过
+  # 「节点已是 9999999，但 scaling_max_freq 被压到 19%」，只报"已满频"就是骗用户。
+  local unl="否"; is_unlocked && unl="是"
+  # 复用 status 已经采过的那份（CAP_FREQ 非空即为已采样），避免一次 status 采两遍、
+  # 两次结果还可能不一样（别的链路在翻转），导致同屏数据自相矛盾。
+  [ -n "$CAP_FREQ" ] || { sample_caps; compute_capped; }
+  local cap=$CAP_INFO full="否"; [ "$CAPPED" = 0 ] && full="是"
+  if [ "$t" -ge "$EFF_TEMP" ] 2>/dev/null; then
+    echo "$wn $(mC "$t") 已超阈值 $(mC "$EFF_TEMP")，已收回保护"; return
+  fi
+  if is_hot; then
+    echo "过热保护中 · $wn $(mC "$t")，降到 $(mC $((EFF_TEMP - HYST))) 以下恢复"; return
+  fi
+  # 已经解锁但实际没顶到上限 → 别处还有一层在压，这条优先于下面的模式判定。
+  # 文案里的数字要和 status 的 CAP_FREQ 一致（同一个 $cap，来自同一次采样）。
+  if [ "$unl" = 是 ] && [ "$full" = 否 ]; then
+    echo "本层已解除，但实际频率仍被压（$cap）· 另有链路在限制，不是本模块能解的"; return
+  fi
+  if [ "$unl" = 否 ] && [ "$full" = 否 ]; then
+    echo "待命（本层未解除），且实际频率被压（$cap）"; return
   fi
   case "$MODE" in
     game)
-      if game_running; then echo "检测到游戏运行，已满频"
-      else echo "待命 · 未检测到游戏运行"; fi ;;
+      # WebUI 打开时游戏必然不在前台；守护有 15 秒宽限，所以刚切出来时仍是满频
+      if [ -n "$GAME_FG" ]; then echo "游戏 $GAME_FG 在前台，已满频（阈值 $(mC "$EFF_TEMP")）"
+      elif [ "$unl" = 是 ]; then echo "游戏刚切到后台，15 秒内收回"
+      else echo "待命 · 游戏在前台时满频"; fi ;;
     apps)
       local cur; cur=$(top_pkg)
       if [ -z "$cur" ]; then echo "待命 · 取不到前台应用"
-      elif app_selected "$cur"; then echo "前台 $cur 已勾选，已满频"
+      elif app_selected "$cur"; then
+        [ "$full" = 是 ] && echo "前台 $cur 已勾选，已满频" || echo "前台 $cur 已勾选，但实际频率被压（$cap）"
       else echo "待命 · 前台 $cur 不在已选列表"; fi ;;
     *)
-      echo "全局模式，已满频" ;;
+      [ "$full" = 是 ] && echo "全局模式，已满频" || echo "全局模式，但实际频率被压（$cap）" ;;
   esac
 }
 
@@ -259,19 +591,21 @@ why_state() {
 # 仅状态变化时才写+记日志，避免每次 tick 都刷屏（实测节点会被厂商抢写，
 # 值对但只读锁丢了也要补锁）。
 tick() {
-  local t; t=$(shell_temp)
+  read_temp
+  local t=$T_NOW
   if should_unlock; then
+    # 先判断值（内建 read，几乎零开销），值对了再查只读锁（ls fork 一次）
     if ! is_unlocked || ! node_readonly; then
       ensure_backup
       unlock_freq
-      log "解锁（${ZONE} ${t} 模式 $MODE）"
+      log "解锁（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
     fi
     # 游戏场景的第二层上限：确保也被禁用（系统会反复重置，需每次补写）
     game_opt_ok || { enable_game; log "禁用游戏上限（game_pid=$(game_pid_val)）"; }
   else
     if is_unlocked; then
       restore_freq
-      log "收回（${ZONE} ${t} 阈值 ${TEMP} 模式 $MODE game=$(game_running && echo Y || echo N)）"
+      log "收回（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE 前台游戏=${GAME_FG:-无}）"
     fi
     game_opt_ok && { disable_game; log "恢复游戏上限"; }
   fi
@@ -280,7 +614,7 @@ tick() {
 # ---- 守护 ----
 list_daemons() {
   for p in /proc/[0-9]*; do
-    cl=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null) || continue
+    cl=$(tr '\0' ' ' 2>/dev/null <"$p/cmdline") || continue
     case "$cl" in *cpulimit.sh*daemon*) echo "${p#/proc/}" ;; esac
   done
 }
@@ -301,14 +635,21 @@ stop_daemon() {
   kill_daemons
 }
 
+# 除了 pid 存活，还要核对 cmdline 是本守护：重启后 pidfile 里的旧 pid
+# 可能已被别的进程复用，只看 kill -0 会误判"在跑"，开机 ensure 就不拉起了。
 is_alive() {
   [ -f "$PIDFILE" ] || return 1
   p=$(cat "$PIDFILE" 2>/dev/null)
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$p" 2>/dev/null
+  kill -0 "$p" 2>/dev/null || return 1
+  case "$(tr '\0' ' ' 2>/dev/null <"/proc/$p/cmdline")" in
+    *cpulimit.sh*daemon*) return 0 ;;
+  esac
+  return 1
 }
 
-conf_sig() { cksum "$CONF" 2>/dev/null | awk '{print $1"-"$2}'; }
+# 配置签名 = mtime + 大小（一次 stat，原来 cksum|awk 两次 fork）。WebUI 写配置会更新 mtime。
+conf_sig() { stat -c '%Y-%s' "$CONF" 2>/dev/null; }
 
 daemon() {
   MY=$$
@@ -321,10 +662,10 @@ daemon() {
     [ "$cur" != "$MY" ] && { log "被新实例接管，退出 pid=$MY"; exit 0; }
     sig=$(conf_sig)
     if [ "$sig" != "$LASTCONF" ]; then
-      ENABLE=1; TEMP=55000; ZONE=skin-msm-therm; MODE=game; HYST=3000
+      ENABLE=1; TEMP=55000; TEMP_CPU=80000; ZONE=skin-msm-therm; MODE=game; HYST=3000
       load_conf
       if [ "$ENABLE" != "1" ]; then
-        restore_freq; disable_game
+        restore_freq; disable_game; rm -f "$HOT_FLAG"
         log "ENABLE!=1，已还原上限并退出"
         rm -f "$PIDFILE"; exit 0
       fi
@@ -344,7 +685,9 @@ cmd_status() {
   else
     [ -f "$PIDFILE" ] && echo "状态：异常（残留 pidfile，守护已死）" || echo "状态：未运行"
   fi
-  echo "配置：ENABLE=$ENABLE TEMP=${TEMP}($ZONE) MODE=$MODE HYST=$HYST"
+  echo "配置：ENABLE=$ENABLE TEMP=${TEMP}/TEMP_CPU=${TEMP_CPU} ZONE=$ZONE MODE=$MODE HYST=$HYST"
+  # 先采样，后面的"当前上限/capped 判定"都用这一份数据，避免同一份报告里自相矛盾
+  sample_caps; compute_capped
   echo "当前上限：$(cat "$FREQ" 2>/dev/null)"
   echo "游戏上限：$(cat /proc/game_opt/cpu_max_freq 2>/dev/null || echo '—')  [disable_cpufreq_limit=$(cat "$GAMEDIS" 2>/dev/null)]"
   echo "出厂备份：$(orig_value)"
@@ -357,15 +700,31 @@ cmd_status() {
       "$(cat /sys/devices/system/cpu/cpu$c/cpufreq/cpuinfo_max_freq 2>/dev/null)"
   done
   echo
-  echo "$ZONE = $(shell_temp)   游戏运行中 = $(game_running && echo 是 || echo 否)"
-  echo "SKIN_TEMP=$(zone_temp skin-msm-therm)"
+  # ★ 实际有没有被压（本函数开头已 sample_caps + compute_capped）：
+  #   只看我们那个节点是不够的 —— 节点可能是 9999999（我们这层解开了），
+  #   而 scaling_max_freq 仍被别的链路压着。实测 Ace 2 Pro（OMRG）和 PLK110 都出现过，
+  #   于是 WebUI 显示"已满频"但数字只有 19%，用户看到的正是这个矛盾。
+  #   CAP_FREQ 给出每簇的实际最低上限/硬件上限（百分比），便于定位。
+  echo "CAPPED=$CAPPED"
+  echo "CAP_INFO=$CAP_INFO"
+  echo "CAP_FREQ=$CAP_FREQ"
+  echo
+  read_temp
+  echo "前台游戏 = $(game_fg && echo "$GAME_FG" || echo 无)"
+  # 实际用于保护的温区（配置的温区本机没有时会换成替补），及该温区用哪个阈值
+  echo "ZONE_USED=${ZONE_USED:-无}"
+  echo "ZONE_T=${ZONE_T:-none}"
+  eff_base; echo "EFF_TEMP=$EFF_BASE"
+  echo "SKIN_TEMP=$T_NOW"
   echo "SHELL_TEMP=$(zone_temp shell_front)"
   echo "STATE_HINT=$(why_state)"
 }
 
+# start = 用户主动开启：写 ENABLE=1 持久化，再（重新）拉起守护。
+# 开机由 service.sh 调 ensure，尊重配置里的 ENABLE，不会把用户关掉的功能重新打开。
 cmd_start() {
+  set_enable 1
   load_conf
-  if [ "$ENABLE" != "1" ]; then echo "配置中 ENABLE!=1，未启动。"; exit 0; fi
   stop_daemon
   nohup sh "$0" daemon >/dev/null 2>&1 &
   i=0
@@ -380,16 +739,22 @@ cmd_start() {
   exit 1
 }
 
+# stop = 用户主动关闭：必须写 ENABLE=0，否则看护循环 120s 后的 ensure 和
+# 下次开机都会按 ENABLE=1 重新拉起守护，用户以为关了其实又满频了。
 cmd_stop() {
+  set_enable 0
   stop_daemon
   restore_freq
   disable_game
-  log "已停止并还原出厂上限（含游戏上限）"
+  rm -f "$HOT_FLAG"
+  log "已停止并还原出厂上限（含游戏上限），已写 ENABLE=0"
   echo "已停止，出厂上限已还原：$(cat "$FREQ" 2>/dev/null)"
 }
 
 cmd_apply() {
   load_conf
+  # 配置是关闭状态时不能 tick（tick 会按条件解锁），交给 stop 走完整还原
+  if [ "$ENABLE" != "1" ]; then cmd_stop; return; fi
   tick
   if ! is_alive; then
     nohup sh "$0" daemon >/dev/null 2>&1 &
@@ -402,7 +767,10 @@ cmd_apply() {
 cmd_ensure() {
   load_conf
   if [ "$ENABLE" != "1" ]; then
-    if is_alive; then stop_daemon; restore_freq; log "ensure：配置已关闭，还原并停止"; fi
+    if is_alive || is_unlocked; then
+      stop_daemon; restore_freq; disable_game; rm -f "$HOT_FLAG"
+      log "ensure：配置已关闭，还原并停止"
+    fi
     return 0
   fi
   is_alive && return 0
@@ -410,6 +778,21 @@ cmd_ensure() {
   nohup sh "$0" daemon >/dev/null 2>&1 &
   sleep 1
 }
+
+# 本机没有高通 msm_performance 节点（联发科/天玑等）→ 温控性能不适用。
+# 守护、开启、热重载都不执行，避免空转；status 如实报告，WebUI 据此提示。
+if [ ! -e "$FREQ" ]; then
+  case "$1" in
+    status)
+      echo "=== CPU 上限解除 ==="
+      echo "状态：本机不支持"
+      echo "UNSUPPORTED=1"
+      echo "STATE_HINT=本机没有高通 msm_performance 限频节点（联发科/天玑机型没有），温控性能不可用"
+      exit 0 ;;
+    stop|ensure) exit 0 ;;
+    *) echo "本机不支持温控性能：没有 $FREQ（联发科/天玑机型没有这个节点）"; exit 1 ;;
+  esac
+fi
 
 case "$1" in
   daemon) load_conf; daemon ;;
@@ -419,6 +802,7 @@ case "$1" in
   status) load_conf; cmd_status ;;
   apply) cmd_apply ;;
   tick)  load_conf; tick; echo "tick done: $(cat "$FREQ")" ;;
+  buildgames) build_game_list; echo "游戏名单 $(grep -c '' "$GAME_LIST_CACHE" 2>/dev/null) 个" ;;
   why)   load_conf; why_state ;;
   *) echo "用法：cpulimit.sh {start|stop|status|apply|tick}"; exit 1 ;;
 esac

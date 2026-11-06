@@ -57,7 +57,7 @@ cmd_overview() {
   # 那 1s 会周期性冻住主线程，不值得。
   r=0
   for p in /proc/[0-9]*; do
-    read -r _ _ st _ <"$p/stat" 2>/dev/null || continue
+    read -r _ _ st _ 2>/dev/null <"$p/stat" || continue
     [ "$st" = "R" ] && r=$((r + 1))
   done
   echo "CPUBUSY=$r"
@@ -80,14 +80,14 @@ cmd_list() {
   # 一次零 fork 扫描，每行 "pid key rss_kb adj"
   for p in /proc/[0-9]*; do
     pid=${p#/proc/}
-    IFS= read -r -d '' cmd <"$p/cmdline" 2>/dev/null || continue
+    IFS= read -r -d '' cmd 2>/dev/null <"$p/cmdline" || continue
     [ -n "$cmd" ] || continue
     case "$cmd" in /*) continue ;; esac           # 二进制路径
     key=${cmd%%:*}                                # :sub 进程归到主包
     case "$key" in *.*) ;; *) continue ;; esac    # 只保留包名形态
-    read -r _sz res _rest <"$p/statm" 2>/dev/null || continue
+    read -r _sz res _rest 2>/dev/null <"$p/statm" || continue
     [ -n "$res" ] || continue
-    read -r adj <"$p/oom_score_adj" 2>/dev/null
+    read -r adj 2>/dev/null <"$p/oom_score_adj"
     # 必须用 echo：Android 的 sh 里 printf 是外部程序（非内建），
     # 逐进程调用会让扫描从 56ms 涨到 2000ms。
     echo "$pid $key $((res * 4)) ${adj:-0}"
@@ -144,18 +144,21 @@ cmd_clean() {
 cmd_kill() {
   pkg="$1"
   [ -n "$pkg" ] || { echo "用法：mem.sh kill <包名>"; exit 1; }
+  # 只允许包名字符：参数要拼进 grep 正则和 am 命令
   case "$pkg" in
+    *[!A-Za-z0-9._]*|*..*|.*) echo "不是合法包名：$pkg"; exit 1 ;;
     *.*) ;;
     *) echo "不是合法包名：$pkg"; exit 1 ;;
   esac
   # 先尝试温和回收，不行再 force-stop
   am kill "$pkg" >/dev/null 2>&1
   sleep 1
-  if ps -A -o NAME 2>/dev/null | grep -q "^${pkg}"; then
+  # 精确匹配包名或其 ":子进程"，前缀匹配会把 com.foo 误认成 com.foobar
+  if ps -A -o NAME 2>/dev/null | grep -qE "^${pkg}(:|\$)"; then
     am force-stop --user 0 "$pkg" >/dev/null 2>&1
     sleep 1
   fi
-  if ps -A -o NAME 2>/dev/null | grep -q "^${pkg}"; then
+  if ps -A -o NAME 2>/dev/null | grep -qE "^${pkg}(:|\$)"; then
     echo "已请求停止 $pkg（可能仍有常驻服务）"
   else
     echo "已停止 $pkg"

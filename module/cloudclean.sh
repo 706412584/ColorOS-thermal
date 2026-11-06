@@ -245,6 +245,8 @@ do_restore() {
 
   echo
   echo "=== 4. 还原文件（含归属/权限/SELinux 上下文）==="
+  cur_owner=$(stat -c '%u:%g' "$SP" 2>/dev/null)
+  cur_ctx=$(stat -c '%C' "$SP" 2>/dev/null)
   rok=0; rbad=0
   while IFS='|' read -r name sname hash uid gid mode ctx size; do
     [ -n "$name" ] || continue
@@ -259,9 +261,12 @@ do_restore() {
       printf '  复制失败 %s\n' "$name"; rbad=$((rbad + 1)); continue
     fi
 
-    chown "$uid:$gid" "$dst" 2>/dev/null
+    # 归属和 SELinux 上下文以「当前」shared_prefs 目录为准：宿主包重装过的话
+    # uid 和 per-app 类别号都会变，用快照里的旧值会让应用读不了这个文件。
+    # 读不到当前目录信息时才退回快照记录的值。
+    [ -n "$cur_owner" ] && chown "$cur_owner" "$dst" 2>/dev/null || chown "$uid:$gid" "$dst" 2>/dev/null
     chmod "$mode" "$dst" 2>/dev/null
-    chcon "$ctx" "$dst" 2>/dev/null
+    [ -n "$cur_ctx" ] && chcon "$cur_ctx" "$dst" 2>/dev/null || chcon "$ctx" "$dst" 2>/dev/null
 
     h=$(sha256sum "$dst" 2>/dev/null | cut -d' ' -f1)
     if [ "$h" = "$hash" ]; then

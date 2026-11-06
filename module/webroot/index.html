@@ -23,8 +23,34 @@
     font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;
     padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 96px);
   }
-  h1{font-size:19px;margin:0 0 2px;letter-spacing:.2px}
-  .sub{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  h1{font-size:20px;margin:2px 2px 3px;letter-spacing:.2px;font-weight:700}
+  .sub{color:var(--muted);font-size:12px;margin:0 2px 16px;font-variant-numeric:tabular-nums}
+  /* 分组标题：左标题 + 右侧说明，不带边框 */
+  .sec{display:flex;align-items:baseline;gap:8px;margin:4px 3px 9px}
+  .sec b{font-size:13px;font-weight:600}
+  .sec span{font-size:11.5px;color:var(--muted);margin-left:auto;text-align:right}
+  .sec + #groups, .sec + #funcGrid{margin-top:0}
+  /* 功能区：和拦截区一样一行两个 */
+  #funcGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}
+  .cap .cdot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+  .cap .cdot.warn{background:var(--warn);box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 20%,transparent)}
+  .cap .ccount.on{color:var(--ok)} .cap .ccount.warn{color:var(--warn)}
+  /* 拦截分组是奇数个时，最后一个（「关于我们」之前那个）占满一行，不留空格 */
+  #groups .cap:nth-last-child(2):nth-child(odd){grid-column:1 / -1}
+  #groups .cap:nth-last-child(2):nth-child(odd) .cdesc{min-height:0}
+  /* 底栏次按钮：浅底色，和背景分开 */
+  .bar #reset{background:var(--chip);border-color:transparent}
+  /* 游戏记录：帧率条（大号平均 + 三个小数字） */
+  .gfps{display:flex;align-items:stretch;gap:7px;margin-top:9px}
+  .gfps > div{background:var(--chip);border-radius:10px;padding:7px 10px;display:flex;flex-direction:column;justify-content:center}
+  .gfps b{font-variant-numeric:tabular-nums;font-weight:700;line-height:1.15}
+  .gfps span{font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap}
+  .gfps .gavg{flex:1.5;background:color-mix(in srgb,var(--accent) 11%,var(--chip))}
+  .gfps .gavg b{font-size:22px;color:var(--accent)}
+  .gfps .gsm{flex:1;align-items:center;text-align:center}
+  .gfps .gsm b{font-size:15px}
+  #grecList .row{padding:14px 14px 13px}
+  #grecList .row + .row{border-top:6px solid var(--bg)}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:12px;overflow:hidden}
   .card-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
   .card-head h2{font-size:14px;margin:0;font-weight:600;flex:1}
@@ -179,7 +205,7 @@
   .membar i{display:block;height:100%;background:var(--ok);width:0;transition:width .3s}
   .membar i.warn{background:var(--warn)} .membar i.bad{background:var(--danger)}
   .grid4{display:grid;grid-template-columns:1fr 1fr;gap:7px}
-  .grid4 div{background:var(--chip);border-radius:9px;padding:7px 10px}
+  .grid4 > div{background:var(--chip);border-radius:9px;padding:7px 10px}
   .grid4 .k{font-size:10.5px;color:var(--muted)}
   .grid4 .v{font-size:13.5px;font-weight:600;margin-top:1px}
   .tabs{display:flex;gap:6px;padding:9px 14px;border-bottom:1px solid var(--line)}
@@ -204,7 +230,7 @@
 
   /* 加载弹窗：操作期间给明确反馈，避免"点了不知道有没有生效" */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);backdrop-filter:blur(3px);
-    display:none;align-items:center;justify-content:center;z-index:20;
+    display:none;align-items:center;justify-content:center;z-index:40;
     padding:calc(env(safe-area-inset-top) + 16px) 20px calc(env(safe-area-inset-bottom) + 16px)}
   .overlay.show{display:flex}
   .overlay .box{background:var(--card);border:1px solid var(--line);border-radius:16px;
@@ -224,7 +250,7 @@
   .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 86px);
     transform:translateX(-50%) translateY(10px);background:#000c;color:#fff;
     padding:9px 15px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;
-    transition:.2s;max-width:88vw;text-align:center;z-index:25}
+    transition:.2s;max-width:88vw;text-align:center;z-index:50}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .mini{font-size:11.5px;color:var(--muted);padding:9px 14px;border-top:1px solid var(--line)}
   .loading{text-align:center;color:var(--muted);padding:28px 0;font-size:13px}
@@ -232,13 +258,13 @@
 </head>
 <body>
 
-<h1>温控性能</h1>
+<h1>ColorOS 温控与云控</h1>
 <div class="sub" id="sub">读取中…</div>
 
-<div class="mini" style="font-size:12.5px;font-weight:600;margin:2px 2px 8px">性能与内存</div>
+<div class="sec"><b>性能与工具</b></div>
 <div id="funcGrid"><div class="loading">读取中…</div></div>
 
-<div class="mini" style="font-size:12.5px;font-weight:600;margin:2px 2px 8px">云控拦截（避免 OTA 覆盖 root）</div>
+<div class="sec"><b>云控拦截</b><span>防止 OTA 覆盖 root</span></div>
 <div id="groups"><div class="loading">正在读取包状态…</div></div>
 
 <!-- 功能面板容器：默认隐藏，点胶囊时移入底部分组面板 -->
@@ -256,28 +282,39 @@
         <div><div class="k">小核 上限/满频</div><div class="v" id="cpulC0">—</div></div>
         <div><div class="k">中核 上限/满频</div><div class="v" id="cpulC4">—</div></div>
         <div><div class="k">大核 上限/满频</div><div class="v" id="cpulC7">—</div></div>
-        <div><div class="k">机身 / 外壳</div><div class="v" id="cpulTempRead">—</div></div>
+        <div><div class="k" id="cpulTempReadK">机身 / 外壳</div><div class="v" id="cpulTempRead">—</div></div>
       </div>
     </div>
     <div class="row" style="cursor:default">
       <div class="body">
-        <div class="name">温度阈值 <span class="tag" id="cpulTempTag">55.0°C</span></div>
-        <div class="desc">按<b>机身表面温度</b>判断：超过该值自动收回上限，降到阈值 −3°C 后恢复。调高会更热、更烫手。</div>
-        <input type="range" id="cpulTemp" min="45000" max="65000" step="500" value="55000"
-               style="width:100%;margin-top:10px;accent-color:var(--accent)">
+        <div class="name">保护温区 <span class="tag" id="cpulZoneTag">自动</span></div>
+        <div class="desc" id="cpulZoneDesc">自动挑选本机可用的温区：优先机身表面；没有就用 <b>CPU 结温</b>（随负载真实上升，保护才有效），阈值自动切到下面的 CPU 结温档。选「指定机身表面」时若本机没有该温区，仍会退回自动。</div>
         <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
-          <button class="tab" id="cpulPresetCool" style="padding:6px 11px">保守 50°</button>
-          <button class="tab on" id="cpulPresetStd" style="padding:6px 11px">标准 55°(推荐)</button>
-          <button class="tab" id="cpulPresetHot" style="padding:6px 11px">激进 60°</button>
+          <button class="tab on" id="cpulZoneAuto" style="padding:8px 14px">自动(推荐)</button>
+          <button class="tab" id="cpulZoneSkin" style="padding:8px 14px">指定机身表面</button>
         </div>
       </div>
     </div>
     <div class="row" style="cursor:default">
       <div class="body">
-        <div class="name">保护温区 <span class="tag" id="cpulZoneTag">机身</span></div>
+        <div class="name">收回阈值 <span class="tag" id="cpulTempTag">55.0 / 80.0°C</span></div>
+        <div class="desc" id="cpulTempDesc">超过阈值自动收回上限，降到阈值 −3°C 后恢复。调高会更热、更烫手。两个阈值<b>各管一档</b>，只按当前温区对应的那档生效。</div>
+        <div class="mini" style="display:flex;gap:8px;align-items:center;border:none;padding:8px 0 0">
+          <span class="mini" style="border:none;padding:0;flex:0 0 82px">机身/外壳</span>
+          <input type="range" id="cpulTemp" min="45000" max="65000" step="500" value="55000"
+                 style="flex:1;min-width:100px;accent-color:var(--accent)">
+          <span class="mini" style="border:none;padding:0;flex:0 0 54px;text-align:right" id="cpulTempVal">55.0°C</span>
+        </div>
+        <div class="mini" style="display:flex;gap:8px;align-items:center;border:none;padding:8px 0 0">
+          <span class="mini" style="border:none;padding:0;flex:0 0 82px">CPU 结温</span>
+          <input type="range" id="cpulTempCpu" min="65000" max="95000" step="1000" value="80000"
+                 style="flex:1;min-width:100px;accent-color:var(--accent)">
+          <span class="mini" style="border:none;padding:0;flex:0 0 54px;text-align:right" id="cpulTempCpuVal">80.0°C</span>
+        </div>
         <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
-          <button class="tab on" id="cpulZoneSkin" style="padding:8px 14px">机身表面(推荐)</button>
-          <button class="tab" id="cpulZoneShell" style="padding:8px 14px">外壳</button>
+          <button class="tab" id="cpulPresetCool" style="padding:6px 11px">保守 50°</button>
+          <button class="tab on" id="cpulPresetStd" style="padding:6px 11px">标准 55°(推荐)</button>
+          <button class="tab" id="cpulPresetHot" style="padding:6px 11px">激进 60°</button>
         </div>
       </div>
     </div>
@@ -289,7 +326,7 @@
           <button class="tab" id="cpulModeGame" style="padding:8px 14px">仅游戏(推荐)</button>
           <button class="tab" id="cpulModeApps" style="padding:8px 14px">指定应用</button>
         </div>
-        <div class="desc" style="margin-top:6px" id="cpulModeDesc">「仅游戏」读系统游戏检测；「指定应用」只在勾选的应用处于前台时生效。</div>
+        <div class="desc" style="margin-top:6px" id="cpulModeDesc">「仅游戏」只在游戏处于前台时满频，切到后台 15 秒后自动收回；每个游戏可在「游戏记录」里单独设温度阈值。「指定应用」只在勾选的应用处于前台时生效。</div>
         <div id="cpulAppsWrap" style="display:none;margin-top:8px">
           <button id="cpulPickApps" style="padding:8px 14px">选择应用…</button>
           <span class="mini" style="border:none;padding:0;display:inline-block" id="cpulAppsSum">未选择</span>
@@ -326,6 +363,25 @@
       <button class="tab" id="tabCpu">CPU 明细</button>
     </div>
     <div id="detailList"><div class="empty">尚未加载</div></div>
+  </div>
+
+  <!-- 游戏记录 -->
+  <div id="grecPanel">
+    <div class="mini" style="border:none;padding:0 0 10px">
+      进入游戏自动开始记录，切到后台超过 30 秒或退出游戏算一局结束（后台时间不计）。保留最近 50 局。
+      <b>1% Low</b> = 最卡的那 1% 时间里的帧率，越接近平均越流畅。
+    </div>
+    <div class="row" style="cursor:default;display:block">
+      <div class="memlabel"><span class="dot" id="grecDot"></span> <b id="grecState">—</b></div>
+      <div class="mini" style="border:none;padding:6px 0 0" id="grecSub">—</div>
+    </div>
+    <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">
+      <button id="grecToggle" style="padding:9px 12px">—</button>
+      <button id="grecRefresh" style="padding:9px 12px">刷新</button>
+      <button id="grecClear" style="padding:9px 12px">清空记录</button>
+      <button id="grecUndo" style="padding:9px 12px;display:none">恢复清空</button>
+    </div>
+    <div id="grecList"><div class="empty">尚未加载</div></div>
   </div>
 
   <!-- 云控残留清理已并入「云控与遥测」明细面板（见 CLOUDCLEAN_HTML） -->
@@ -456,7 +512,7 @@ const CATALOG = [
       { pkg:"com.heytap.htms", cls:"com.heytap.msp.cloudctrlreport.service.CloudConfigReportService",
         label:"云控上报", desc:"云控配置的回执与上报", checked:true },
       { pkg:"com.oplus.statistics.rom", label:"ROM 遥测", desc:"系统级埋点与统计上报", checked:true },
-      { pkg:"com.oplus.pantanal.ums", label:"桌面卡片云配置", desc:"卡片/负一屏的云端配置下发", checked:false },
+      { pkg:"com.oplus.pantanal.ums", label:"桌面卡片云配置", desc:"卡片/负一屏的云端配置下发；拦截后桌面与主题的组件卡片、流体云会不显示", checked:false, risk:"warn" },
     ]
   },
   {
@@ -625,10 +681,9 @@ function buildAboutCap() {
       '<span class="cdot" style="background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)"></span>' +
       '<span class="ctitle">关于我们</span>' +
     '</div>' +
-    '<div class="cdesc">云控拦截 · 温控性能 · 内存面板，全部本地实现，数据不出设备。</div>' +
-    '<div class="meta"><span>酷安@谋事在人成事在天</span><span>纯本地</span><span>无联网</span>' +
+    '<div class="cdesc">全部本地运行，数据不出设备。</div>' +
+    '<div class="meta"><span>酷安@谋事在人成事在天</span><span>纯本地</span>' +
       '<span id="aboutChangelog" style="cursor:pointer;color:var(--accent);font-weight:600">更新日志 ›</span>' +
-      '<span id="aboutRepo" style="cursor:pointer;color:var(--accent);font-weight:600">复制仓库地址</span>' +
     '</div>';
 
   const qq = document.createElement("div");
@@ -663,18 +718,183 @@ function buildAboutCap() {
   // 「更新日志」点开在底部面板显示 CHANGELOG.md
   const cl = left.querySelector("#aboutChangelog");
   if (cl) cl.addEventListener("click", (e) => { e.stopPropagation(); openChangelog(); });
-  // 「复制仓库地址」
-  const rp = left.querySelector("#aboutRepo");
-  if (rp) rp.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const url = "https://github.com/706412584/ColorOS-thermal";
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(url);
-      else { const ta = document.createElement("textarea"); ta.value = url; ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); }
-      toast("已复制：" + url);
-    } catch (err) { toast(url); }
-  });
   return cap;
+}
+
+/* 工具面板：诊断报告 / 撤销模块全部改动 / 保持 USB 调试 / 仓库地址。
+   从「关于我们」挪出来：那里只留作者信息，工具集中在一个面板里，每项一行带说明。 */
+const TOOLS = [
+  { id:"diag", title:"导出诊断报告", desc:"遇到问题时生成报告，发给作者排查。只读，不改任何设置。" },
+  { id:"adb", title:"保持 USB 调试", desc:"关闭开发者模式后，模块自动把 USB 调试打开回来。", toggle:true },
+  // 无线调试是 Android 11（SDK 30）才有的系统功能，没有就不显示这一行
+  { id:"wifi", title:"保持无线调试", desc:"连上 Wi-Fi 时自动打开无线调试，电脑不插线也能 adb 连接。", toggle:true, minSdk:30 },
+  { id:"restore", title:"撤销模块全部改动", desc:"解除所有拦截、清空拦截清单、还原 CPU 上限。账号登录异常、桌面卡片不显示时用。", danger:true },
+  { id:"repo", title:"复制仓库地址", desc:"GitHub 开源地址。" },
+];
+let adbKeepOn = false, wifiKeepOn = false, sysSdk = 0;
+
+async function openToolsPanel() {
+  fnRestore();
+  const wrap = document.getElementById("sheetBody");
+  wrap.innerHTML = "";
+  document.getElementById("sheetAll").style.display = "none";
+  document.getElementById("sheetSum").textContent = "";
+  document.getElementById("sheetTitle").textContent = "工具";
+  const box = document.createElement("div");
+  box.id = "fnHolder";
+  if (!sysSdk) { try { sysSdk = parseInt((await exec("getprop ro.build.version.sdk")).stdout, 10) || 0; } catch (e) {} }
+  for (const t of TOOLS) {
+    if (t.minSdk && sysSdk && sysSdk < t.minSdk) continue;
+    const row = document.createElement("div");
+    row.className = "row" + (t.danger ? " danger" : "");
+    row.innerHTML =
+      '<div class="body"><div class="name"' + (t.danger ? ' style="color:var(--danger)"' : '') + '>' + esc(t.title) +
+      (t.toggle ? ' <span class="tag" id="toolTag_' + t.id + '">…</span>' : '') + '</div>' +
+      '<div class="desc">' + esc(t.desc) + '</div></div>' +
+      '<div style="align-self:center;color:var(--muted)">›</div>';
+    row.addEventListener("click", () => runTool(t.id));
+    box.appendChild(row);
+  }
+  wrap.appendChild(box);
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+  await paint();
+  adbKeepLoad().catch(() => {});
+}
+
+async function adbKeepLoad() {
+  const r = await exec('sh "' + MODDIR + '/adbkeep.sh" status');
+  const o = r.stdout || "";
+  adbKeepOn = /ENABLED=1/.test(o);
+  wifiKeepOn = /WIFI_KEEP=1/.test(o);
+  const tag = document.getElementById("toolTag_adb");
+  if (tag) tag.textContent = adbKeepOn ? "已开启" : "已关闭";
+  const wt = document.getElementById("toolTag_wifi");
+  if (wt) {
+    const ip = (o.match(/WLAN_IP=(\S*)/) || [])[1], port = (o.match(/TLS_PORT=(\S*)/) || [])[1];
+    wt.textContent = !wifiKeepOn ? "已关闭" : (/WIFI_ADB=1/.test(o) && ip && port ? ip + ":" + port : "已开启 · 等待 Wi-Fi");
+  }
+}
+
+async function runTool(id) {
+  if (id === "repo") {
+    const url = "https://github.com/706412584/ColorOS-thermal";
+    toast(await copyText(url) ? "已复制：" + url : url);
+  } else if (id === "diag") {
+    // 先关掉工具面板：遮罩在面板下面，不关的话报告面板弹出来会被盖住
+    closeSheet();
+    showLoad("正在生成诊断报告…"); await paint();
+    // 后台跑，前台每 0.5 秒短查一次是否完成：ksu.exec 是同步的，直接等它跑完整个页面都会冻住
+    const out = "/data/local/tmp/.oplus-diag.out";
+    await exec('rm -f ' + out + '; (sh "' + MODDIR + '/diag.sh" >' + out + '.tmp 2>&1; mv ' + out + '.tmp ' + out + ') >/dev/null 2>&1 &');
+    let res = "";
+    for (let i = 0; i < 120; i++) {   // 最多等 60 秒
+      await new Promise(r => setTimeout(r, 500));
+      setStep("已用 " + Math.round((i + 1) / 2) + " 秒");
+      const q = await exec('cat ' + out + ' 2>/dev/null');
+      if ((q.stdout || "").includes("诊断报告已生成")) { res = q.stdout; break; }
+    }
+    exec('rm -f ' + out).catch(() => {});
+    const path = (res.match(/诊断报告已生成：(\S+)/) || [])[1];
+    if (!path) { endLoad(false, "生成失败或超时"); return; }
+    // 先把内容读进内存：复制要在按钮点击里同步完成，否则 WebView 会拒绝写剪贴板
+    const c = await exec('cat "' + path + '"');
+    endLoad(true, "已生成");
+    openDiagPanel(path, c.stdout || "");
+  } else if (id === "adb") {
+    if (!adbKeepOn && !confirm("开启后，即使关闭开发者模式，模块也会保持 USB 调试打开（每 15 秒检查一次）。\n\n" +
+      "注意：开发者模式关着时，设置里看不到 USB 调试开关，「撤销 USB 调试授权」的入口也会隐藏。\n" +
+      "临时 root：重启后要等重新获取 root、模块启动后才会生效。\n\n确定开启吗？")) return;
+    const r = await exec('sh "' + MODDIR + '/adbkeep.sh" ' + (adbKeepOn ? "off" : "on"));
+    toast((r.stdout || "").trim() || "完成");
+    await adbKeepLoad().catch(() => {});
+  } else if (id === "wifi") {
+    if (!wifiKeepOn && !confirm("开启后，只要手机连着 Wi-Fi，模块就保持无线调试打开（每 15 秒检查一次）。\n\n" +
+      "· 同一局域网里的电脑可以连接，但第一次要在手机「开发者选项 → 无线调试 → 使用配对码配对」配对，没配对过的电脑连不上。\n" +
+      "· 没连 Wi-Fi 时系统不允许打开，模块不会替你打开 Wi-Fi。\n" +
+      "· 每次打开端口都会变，这里会显示当前的 IP:端口。\n" +
+      "· 公共 Wi-Fi 下不建议开。\n\n确定开启吗？")) return;
+    const r = await exec('sh "' + MODDIR + '/adbkeep.sh" ' + (wifiKeepOn ? "wifi-off" : "wifi-on"));
+    toast((r.stdout || "").trim() || "完成");
+    await adbKeepLoad().catch(() => {});
+  } else if (id === "restore") {
+    if (!confirm("撤销模块全部改动：\n· 解除所有拦截（重新启用本模块禁用过的所有应用和组件）\n· 清空拦截清单（原清单会备份）\n· 关闭 CPU 上限解除并还原出厂上限\n\n注意：OTA 拦截也会解除，系统可能自动更新并覆盖 root。只想恢复默认勾选的话，请用底部的「还原」。\n\n不删除任何数据、不需要重启。确定执行吗？")) return;
+    closeSheet();
+    showLoad("正在撤销…"); await paint();
+    const r = await exec('sh "' + MODDIR + '/restore.sh" 2>&1');
+    const out = (r.stdout || "").trim();
+    const m = out.match(/启用 (\d+) 项/);
+    endLoad(r.errno === 0, r.errno === 0 ? ("已撤销（启用 " + (m ? m[1] : "?") + " 项）") : "撤销失败");
+    if (r.errno === 0) alert(out.split("\n").filter(l => !/^  已启用/.test(l)).join("\n"));
+    location.reload();
+  }
+}
+
+// 复制文本：优先 Clipboard API，WebView 不支持时退回 textarea + execCommand
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+
+const ISSUE_URL = "https://gitee.com/wu-yongchengsvip/oplus-thermal/issues/new";
+
+/* 诊断报告面板：显示路径 + 复制 / 去 Gitee 反馈。
+   不自动上传：报告由用户自己决定发给谁（不往模块里放任何账号 token）。 */
+function openDiagPanel(path, text) {
+  fnRestore();
+  const wrap = document.getElementById("sheetBody");
+  wrap.innerHTML = "";
+  document.getElementById("sheetAll").style.display = "none";
+  document.getElementById("sheetSum").textContent = "";
+  document.getElementById("sheetTitle").textContent = "诊断报告";
+  const box = document.createElement("div");
+  box.id = "fnHolder";
+  box.style.cssText = "padding:4px 14px 18px;font-size:13px;line-height:1.6";
+  const lines = text.split("\n").length;
+  box.innerHTML =
+    '<div class="desc">已保存到 <b>' + esc(path) + '</b>（' + lines + ' 行，' + (text.length / 1024).toFixed(1) + ' KB）。' +
+    '只含设备型号、系统版本、模块配置和日志，不含账号、手机号、IMEI、应用列表。</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">' +
+      '<button class="primary" id="diagOpen" style="padding:9px 12px">在文件管理中打开</button>' +
+      '<button id="diagCopy" style="padding:9px 12px">复制报告</button>' +
+      '<button id="diagIssue" style="padding:9px 12px">去 Gitee 反馈</button>' +
+    '</div>' +
+    '<div class="desc">发给作者（QQ 706412584）：点「在文件管理中打开」，在「下载」里长按 <b>' + esc(path.split("/").pop()) + '</b>，' +
+    '选「发送」→ QQ 或微信。也可以「复制报告」，直接粘贴进聊天框。</div>' +
+    '<pre style="margin-top:10px;max-height:40vh;overflow:auto;background:var(--chip);border-radius:9px;padding:9px;font-size:11px;white-space:pre-wrap;word-break:break-all">' +
+      esc(text) + '</pre>';
+  wrap.appendChild(box);
+  document.getElementById("sheetMask").classList.add("show");
+  document.getElementById("sheet").classList.add("show");
+  document.getElementById("diagCopy").addEventListener("click", async () => {
+    toast(await copyText(text) ? "已复制报告（" + lines + " 行）" : "复制失败：请用「在文件管理中打开」发送文件");
+  });
+  // 打开文件管理的「下载」目录，由用户在文件管理里发送。
+  // 不从模块直接分享：分享是 root 发起的，系统不把读取权限转给 QQ，QQ 会提示「文件不存在」。
+  document.getElementById("diagOpen").addEventListener("click", async () => {
+    const name = path.split("/").pop();
+    const copied = await copyText(name);
+    const r = await exec('sh "' + MODDIR + '/diag.sh" open');
+    if (/OPEN=ok/.test(r.stdout || "")) toast("已打开「下载」，长按报告选「发送」" + (copied ? "（文件名已复制，可搜索）" : ""));
+    else toast("打不开文件管理。报告在：下载 / " + name);
+  });
+  document.getElementById("diagIssue").addEventListener("click", async () => {
+    // KernelSU WebUI 没有 openUrl 桥：用 am start 让系统浏览器打开
+    // 地址同时复制一份：没装浏览器或弹出选择框被关掉时，用户还能手动粘贴打开
+    const copied = await copyText(ISSUE_URL);
+    const r = await exec("am start -a android.intent.action.VIEW -d '" + ISSUE_URL + "' >/dev/null 2>&1; echo RC=$?");
+    if (/RC=0/.test(r.stdout || "")) toast("正在打开浏览器" + (copied ? "（地址也已复制）" : ""));
+    else toast(copied ? "打不开浏览器，反馈地址已复制" : ISSUE_URL);
+  });
 }
 
 /* 更新日志：读模块根目录的 CHANGELOG.md，渲染进底部面板 */
@@ -794,11 +1014,56 @@ const APP_NAMES = {
 /* ---------- 性能与内存：胶囊网格（点开进底部面板） ---------- */
 const FUNCS = [
   { id:"cpul", panel:"cpulPanel", title:"温控性能",
-    desc:"解除出厂 CPU 频率上限（大核 58%→100%），带温度保护与一键还原。" },
+    desc:"解除出厂 CPU 上限，带温度保护" },
   { id:"mem", panel:"memPanel", title:"内存与占用",
-    desc:"内存总览、夜间 zram、后台清理，以及内存/CPU 占用明细。" },
+    desc:"内存总览、后台清理、占用明细" },
+  { id:"grec", panel:"grecPanel", title:"游戏记录",
+    desc:"每局帧率、1% Low、温度与耗电" },
+  { id:"tools", title:"工具",
+    desc:"诊断报告、USB/无线调试、撤销改动" },
 ];
-let funcLoaded = { cpul:false, mem:false };
+
+// 胶囊底部的实时状态（点亮状态点）。只读，开页后后台取一次，不阻塞首屏。
+function setFuncSum(id, text, state) {
+  const s = document.getElementById("funcSum_" + id);
+  const cap = document.getElementById("func_" + id);
+  if (!s || !cap) return;
+  s.textContent = text;
+  s.className = "ccount" + (state ? " " + state : "");
+  const dot = cap.querySelector(".cdot");
+  if (dot) dot.className = "cdot" + (state ? " " + state : "");
+}
+async function loadFuncSums() {
+  const r = await exec(
+    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null | grep -E "^(状态|当前上限|UNSUPPORTED|SKIN_TEMP)"; echo "===CUT==="; ' +
+    'sh "' + MODDIR + '/mem.sh" overview 2>/dev/null; echo "===CUT==="; ' +
+    'sh "' + MODDIR + '/gamerec.sh" status 2>/dev/null');
+  const [c, m, g] = (r.stdout || "").split("===CUT===");
+  const kv = t => { const o = {}; for (const l of (t || "").split("\n")) { const i = l.indexOf("="); if (i > 0) o[l.slice(0, i).trim()] = l.slice(i + 1).trim(); } return o; };
+  // 温控
+  if (/UNSUPPORTED=1/.test(c)) setFuncSum("cpul", "本机不支持", "");
+  else if (!/状态：运行中/.test(c)) setFuncSum("cpul", "未开启", "");
+  else {
+    const t = (c.match(/SKIN_TEMP=(-?\d+)/) || [])[1];
+    // 保护温区可能不是机身（新机型上没有 skin-msm-therm）：标出是哪个，否则用户看不懂这个温度
+    const zt = (c.match(/ZONE_T=(\S+)/) || [])[1];
+    const tt = t ? " · " + (t / 1000).toFixed(1) + "°C" + (zt === "cpu" ? "(CPU)" : "") : "";
+    const unl = /当前上限：.*9999999/.test(c);
+    const cap = /^CAPPED=1$/m.test(c);
+    if (unl && cap) setFuncSum("cpul", "被压制" + tt, "warn");
+    else if (unl) setFuncSum("cpul", "满频" + tt, "on");
+    else setFuncSum("cpul", "待命" + tt, "warn");
+  }
+  // 内存
+  const mk = kv(m);
+  if (mk.MEMAVAIL_MB) setFuncSum("mem", "可用 " + (mk.MEMAVAIL_MB / 1024).toFixed(1) + " GB", "");
+  // 游戏记录
+  const gk = kv(g);
+  if (gk.ENABLED === "0") setFuncSum("grec", "已关闭", "");
+  else if (gk.CUR) setFuncSum("grec", "记录中…", "on");
+  else setFuncSum("grec", (gk.COUNT || 0) + " 局", gk.RUNNING === "1" ? "on" : "warn");
+}
+let funcLoaded = { cpul:false, mem:false, grec:false };
 
 function renderFuncGrid() {
   const host = document.getElementById("funcGrid");
@@ -821,6 +1086,7 @@ let curPanelEl = null;   // 当前搬进 sheet 的面板元素本身（搬元素
 async function openFnPanel(id) {
   const f = FUNCS.find(x => x.id === id);
   if (!f) return;
+  if (!f.panel) { if (id === "tools") return openToolsPanel(); return; }
   fnRestore();                 // 先把上一个面板元素归还
   fnCurrent = id;
   const wrap = document.getElementById("sheetBody");
@@ -842,6 +1108,8 @@ async function openFnPanel(id) {
   else if (id === "cpul") { clr(); }
   if (id === "mem" && !funcLoaded.mem) { funcLoaded.mem = true; loadMemDetail().catch(clr); }
   else if (id === "mem") { clr(); }
+  // 游戏记录每次打开都重读（可能刚玩完一局）
+  if (id === "grec") { funcLoaded.grec = true; loadGameRec().catch(clr); }
 }
 
 /* 应用选择器（指定应用模式） */
@@ -937,7 +1205,8 @@ async function openAppPicker() {
     // 关键：保存选择 = 直接切到「指定应用」模式并写入设备生效（不再要求用户另点「保存并开启」）
     cpulMode = "apps";
     cpulSyncModeTab();
-    await cpulWriteConf("apps");
+    try { await cpulWriteConf("apps"); }
+    catch (e) { endLoad(false, "失败：" + (e && e.message ? e.message : e)); }
   });
 }
 function cpulShowAppsSum() {
@@ -1114,7 +1383,10 @@ async function apply() {
       const key   = keyOf(it);
       const want  = selected.has(key);      // true = 希望拦截（禁用）
       const isOff = isBlocked(it);          // 当前是否已禁用
-      if (want === isOff) continue;         // 已一致，跳过
+      // 只有「状态已一致」且「这次没改勾选」才跳过。勾选有变化的项一律发命令：
+      // 状态检测在部分 ROM 上可能读不准（组件状态靠解析 dumpsys），
+      // 只信检测会出现「取消勾选了但组件仍被禁用」。pm enable/disable 重复执行无害。
+      if (want === isOff && want === savedSelected.has(key)) continue;
       if (it.cls) {
         cmds.push((want ? 'pm disable --user 0 ' : 'pm enable --user 0 ') + key + ' </dev/null');
       } else {
@@ -1353,8 +1625,17 @@ async function memClean() {
 
 /* ---------- CPU 上限解除 ---------- */
 let cpulLoaded = false, cpulConf = {}, cpulApplied = 0, cpulOrigTemp = 55000, cpulMode = "game";
-let cpulZone = "skin-msm-therm";
-let cpulAppliedZone = "skin-msm-therm";
+// 温区：auto = 交给脚本自动挑（首选 skin-msm-therm，没有就用 CPU 结温，再没有退外壳）
+//       skin = 用户指定机身表面；换到没有该温区的机器上脚本仍会退回自动
+// shell_front 不再作为可选项：实测它在外壳 54°C 时只有 37~40°C，甚至同值不动，选了等于没有保护。
+// 顺带把旧配置里的 shell_front 迁到 auto，否则老用户升级后会停在一个没用的选项上。
+let cpulZone = "auto";
+let cpulAppliedZone = "auto";
+// CPU 结温档阈值：与 TEMP 各管一档，必须分开存，否则从 CPU 结温机型切到机身机型时数值会串档
+let cpulCpuTemp = 80000, cpulOrigCpuTemp = 80000, cpulAppliedCpuTemp = 80000;
+// 当前保护温区属于哪一档（cpu / skin），由 cpulimit.sh status 的 ZONE_T= 更新。
+// 「按游戏设温度阈值」用它决定基准是 TEMP 还是 TEMP_CPU。
+let cpulProtZone = "skin";
 let cpulApps = [], cpulAppliedApps = [];
 try { cpulApps = JSON.parse(localStorage.getItem("cpul.apps") || "[]"); } catch (e) { cpulApps = []; }
 cpulAppliedApps = cpulApps.slice();
@@ -1377,8 +1658,9 @@ function cpulSyncPreset() {
   cpulPickTab(v === 50000 ? "cpulPresetCool" : (v === 55000 ? "cpulPresetStd" : (v === 60000 ? "cpulPresetHot" : "")), ids);
 }
 function cpulSyncZoneTab() {
-  cpulPickTab(cpulZone === "skin-msm-therm" ? "cpulZoneSkin" : "cpulZoneShell", ["cpulZoneSkin", "cpulZoneShell"]);
-  document.getElementById("cpulZoneTag").textContent = cpulZone === "skin-msm-therm" ? "机身" : "外壳";
+  cpulPickTab(cpulZone === "skin-msm-therm" ? "cpulZoneSkin" : "cpulZoneAuto", ["cpulZoneAuto", "cpulZoneSkin"]);
+  document.getElementById("cpulZoneTag").textContent =
+    cpulZone === "skin-msm-therm" ? "指定机身" : "自动";
 }
 
 async function loadCpul() {
@@ -1395,12 +1677,17 @@ async function loadCpul() {
   }
   cpulConf = cfg; cpulLoaded = true;
   cpulMode = (cfg.MODE === "game" || cfg.MODE === "apps") ? cfg.MODE : "global";
-  cpulZone = cfg.ZONE === "shell_front" ? "shell_front" : "skin-msm-therm";
+  // 只有明确写了 skin-msm-therm 才算「指定机身」；shell_front 是旧配置里的无效选项，迁到自动
+  cpulZone = cfg.ZONE === "skin-msm-therm" ? "skin-msm-therm" : "auto";
   cpulAppliedZone = cpulZone;
   const temp = parseInt(cfg.TEMP || "55000", 10);
   cpulOrigTemp = temp; cpulApplied = temp;
   document.getElementById("cpulTemp").value = temp;
-  document.getElementById("cpulTempTag").textContent = (temp / 1000).toFixed(1) + "°C";
+  document.getElementById("cpulTempVal").textContent = (temp / 1000).toFixed(1) + "°C";
+  cpulCpuTemp = parseInt(cfg.TEMP_CPU || "80000", 10);
+  cpulOrigCpuTemp = cpulCpuTemp; cpulAppliedCpuTemp = cpulCpuTemp;
+  document.getElementById("cpulTempCpu").value = cpulCpuTemp;
+  document.getElementById("cpulTempCpuVal").textContent = (cpulCpuTemp / 1000).toFixed(1) + "°C";
   cpulSyncPreset(); cpulSyncZoneTab(); cpulSyncModeTab();
   renderCpul(st || "");
   const p = document.getElementById("cpulPanel"); if (p) p.classList.remove("fn-loading");
@@ -1410,6 +1697,11 @@ function renderCpul(st) {
   const en = cpulConf.ENABLE === "1";
   const running = /状态：运行中/.test(st);
   const unlocked = /9999999/.test((st.match(/当前上限：(.*)/) || [])[1] || "");
+  // 实际上限有没有顶到硬件上限（脚本给的 CAPPED/CAP_INFO）。
+  // 不能只看节点 —— 节点是 9999999 但我们那层之外还有链路在压时，
+  // 报"已满频"就是骗用户（实测 Ace 2 Pro 的 OMRG、PLK110 都出现过）。
+  const capped = /^CAPPED=1$/m.test(st);
+  const capInfo = (st.match(/^CAP_INFO=(.*)$/m) || [])[1] || "";
   // 每核显示「上限 / 硬件上限」：一眼看出有没有被压（上限=硬件上限即满频）
   // status 行形如： cpu7   1843200 /   864000 /  3187200
   const core = k => {
@@ -1425,43 +1717,83 @@ function renderCpul(st) {
     document.getElementById(id).style.color = o.max >= o.hw ? "var(--ok)" : "var(--warn)";
   };
   setCore("cpulC0", 0); setCore("cpulC4", 4); setCore("cpulC7", 7);
-  // 机身 / 外壳 双温度
-  const skin = (st.match(/SKIN_TEMP=(\d+)/) || [])[1];
-  const shell = (st.match(/SHELL_TEMP=(\d+)/) || [])[1];
-  const c = v => v ? (v / 1000).toFixed(1) + "°C" : "—";
-  document.getElementById("cpulTempRead").textContent = (skin || shell)
-    ? (c(skin) + " / " + c(shell)) : "—";
-  document.getElementById("cpulTempTag").textContent = (parseInt(cpulConf.TEMP || "50000", 10) / 1000).toFixed(1) + "°C";
+  // 当前保护温区读数：显示模块实际用的那个温区的名字与温度（可能不是机身）
+  const zu = (st.match(/ZONE_USED=(\S+)/) || [])[1] || "";
+  const zt = (st.match(/ZONE_T=(\S+)/) || [])[1] || "";
+  if (zt) cpulProtZone = zt;   // 供「按游戏设阈值」判断该用哪一档基准
+  const skin = (st.match(/SKIN_TEMP=(-?\d+)/) || [])[1];
+  const shell = (st.match(/SHELL_TEMP=(-?\d+)/) || [])[1];
+  const c = v => (v === undefined || v === "") ? "—" : (v / 1000).toFixed(1) + "°C";
+  const usedCpu = zt === "cpu" && skin;
+  const kun = document.getElementById("cpulTempReadK");
+  if (kun) kun.textContent = (skin && zu) ? ("保护温区 " + zu) : "机身 / 外壳";
+  document.getElementById("cpulTempRead").textContent = usedCpu
+    ? (c(skin) + "（CPU 结温）")
+    : (skin || shell ? (c(skin) + " / " + c(shell)) : "—");
+  document.getElementById("cpulTempTag").textContent =
+    (parseInt(cpulConf.TEMP || "55000", 10) / 1000).toFixed(1) + " / " +
+    (parseInt(cpulConf.TEMP_CPU || "80000", 10) / 1000).toFixed(1) + "°C";
   // 状态点与文案：已满频 / 待命(带原因) / 未开启
   const hint = (st.match(/STATE_HINT=(.*)/) || [])[1] || "";
+  if (/UNSUPPORTED=1/.test(st)) {
+    setDot("cpulDot", "off");
+    document.getElementById("cpulState").textContent = "本机不支持";
+    document.getElementById("cpulInfo").textContent = hint;
+    for (const id of ["cpulApply", "cpulStop"]) { const b = document.getElementById(id); if (b) b.disabled = true; }
+    return;
+  }
   if (!running) { setDot("cpulDot", "off"); document.getElementById("cpulState").textContent = "未开启"; }
+  // 解锁了但实际频率没顶到上限 → 报"已解除，仍有别的限制"，而不是"已满频"。
+  // 这是最容易被误解的状态（截图看着满频、数字只有一两成）。
+  else if (unlocked && capped) { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "已解除，但被别的链路压着"; }
   else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "已满频"; }
   else { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = hint || "待命（条件未满足）"; }
   cpulSyncModeTab();
   updateCpulBtn();
-  document.getElementById("cpulInfo").textContent =
-    st.split("\n").filter(l => /skin-msm|游戏运行中|出厂备份|游戏上限/.test(l)).join(" · ") || "—";
+  // 底部一行说明：原来直接贴 status 原文（8 个核心的原始数值），看不懂。改成人话。
+  const fg = ((st.match(/前台游戏 = (\S+)/) || [])[1] || "");
+  const gameOff = /disable_cpufreq_limit=1/.test(st);
+  const bak = ((st.match(/出厂备份：(.*)/) || [])[1] || "").trim();
+  const big = (bak.match(/7:(\d+)/) || [])[1];
+  document.getElementById("cpulInfo").textContent = [
+    "前台游戏：" + (fg && fg !== "无" ? grecName(fg) : "无"),
+    "游戏场景限频：" + (gameOff ? "已解除" : "系统控制"),
+    big ? "出厂大核上限 " + (big / 1000000).toFixed(2) + " GHz" : "",
+    // 被别的链路压着时，把这个事实摆在最显眼的一行里，避免"看着满频其实很低"。
+    // CAP_INFO 形如 "0:72% 3:82%"，冒号前是核心组的 policy 号，写明单位免得看不懂。
+    (capped && capInfo) ? "实际被压到：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
+  ].filter(Boolean).join(" · ");
 }
 
 function updateCpulBtn() {
   const b = document.getElementById("cpulApply");
   const temp = parseInt(document.getElementById("cpulTemp").value, 10);
+  const tempCpu = parseInt(document.getElementById("cpulTempCpu").value, 10);
   const appsChanged = cpulMode === "apps" && JSON.stringify(cpulApps) !== JSON.stringify(cpulAppliedApps);
-  const changed = temp !== cpulApplied || cpulMode !== (cpulConf.MODE || "game")
-    || cpulZone !== (cpulConf.ZONE || "skin-msm-therm") || appsChanged;
-  b.disabled = !changed;
-  b.textContent = changed ? "保存并开启" : "已生效";
+  // 关闭后配置是 ENABLE=0：此时按钮必须可点（否则参数没改就显示「已生效」，开不回来）
+  const off = cpulConf.ENABLE !== "1";
+  // 配置里没写 ZONE 时脚本按自动处理，所以空串要和 auto 等价，否则一进面板就显示"未保存"
+  const confZone = (!cpulConf.ZONE || cpulConf.ZONE === "auto" || cpulConf.ZONE === "shell_front")
+    ? "auto" : cpulConf.ZONE;
+  const changed = temp !== cpulApplied || tempCpu !== cpulAppliedCpuTemp
+    || cpulMode !== (cpulConf.MODE || "game")
+    || cpulZone !== confZone || appsChanged;
+  b.disabled = !off && !changed;
+  b.textContent = off ? "开启" : (changed ? "保存并开启" : "已生效");
 }
 
 function fmtTempC(){ return (parseInt(document.getElementById("cpulTemp").value,10)/1000).toFixed(1)+"°C"; }
+function fmtTempCpu(){ return (parseInt(document.getElementById("cpulTempCpu").value,10)/1000).toFixed(1)+"°C"; }
 
 // 写入配置并应用（mode 可选；默认用当前 cpulMode）。供「保存并开启」和「保存选择」复用。
 async function cpulWriteConf(mode) {
   mode = mode || cpulMode;
   const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  const vc = parseInt(document.getElementById("cpulTempCpu").value, 10);
   showLoad("正在应用 CPU 上限配置…");
   await paint();
-  const conf = "# 由「温控性能」WebUI 生成\nENABLE=1\nTEMP=" + v +
+  // ZONE 写 auto 时脚本按"没配"处理（走自动挑选），这样跨机型不会带错温区名
+  const conf = "# 由「温控性能」WebUI 生成\nENABLE=1\nTEMP=" + v + "\nTEMP_CPU=" + vc +
     "\nZONE=" + cpulZone + "\nMODE=" + mode + "\nHYST=" + (cpulConf.HYST || "3000") + "\n";
   const appsCsv = (mode === "apps" ? cpulApps : []).join("\n");
   const r = await exec(
@@ -1469,21 +1801,31 @@ async function cpulWriteConf(mode) {
     "; printf '%s\\n' '" + appsCsv.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.apps"' +
     " && sh " + '"' + MODDIR + '/cpulimit.sh"' + " apply"
   );
+  if (r.errno !== 0) {
+    await loadCpul().catch(() => {});
+    throw new Error((r.stderr || r.stdout || "").trim() || ("errno " + r.errno));
+  }
   cpulOrigTemp = Math.min(cpulOrigTemp, v);
+  cpulOrigCpuTemp = Math.min(cpulOrigCpuTemp, vc);
   cpulApplied = v; cpulAppliedZone = cpulZone; cpulAppliedApps = cpulApps.slice();
+  cpulAppliedCpuTemp = vc;
   await loadCpul().catch(() => {});
   const modeName = mode === "game" ? "仅游戏" : (mode === "apps" ? ("指定应用 " + cpulApps.length + " 个") : "全局");
-  endLoad(true, "已开启（" + (v/1000).toFixed(1) + "°C · " + modeName + "）");
+  endLoad(true, "已开启（" + (v/1000).toFixed(1) + " / " + (vc/1000).toFixed(1) + "°C · " + modeName + "）");
   toast("CPU 上限已解除");
   if (mode === "apps") openFnPanel("cpul");   // 从选择器返回时回到温控面板
 }
 
 async function cpulApplyConf() {
   const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  const vc = parseInt(document.getElementById("cpulTempCpu").value, 10);
   // 拉高阈值（放宽温控）→ 二次确认
-  if (v > cpulOrigTemp) {
-    if (!confirm("阈值为 " + fmtTempC() + "，高于出厂建议（" + (cpulOrigTemp/1000).toFixed(1) +
-      "°C）。\n放宽温控可能导致设备更热、功耗更高，长时间高负载有风险。\n\n确定使用 " + fmtTempC() + " 吗？")) return;
+  if (v > cpulOrigTemp || vc > cpulOrigCpuTemp) {
+    const hi = [];
+    if (v > cpulOrigTemp) hi.push("机身/外壳 " + fmtTempC() + "（建议 " + (cpulOrigTemp/1000).toFixed(1) + "°C）");
+    if (vc > cpulOrigCpuTemp) hi.push("CPU 结温 " + fmtTempCpu() + "（建议 " + (cpulOrigCpuTemp/1000).toFixed(1) + "°C）");
+    if (!confirm("阈值高于出厂建议：\n  " + hi.join("\n  ") +
+      "\n\n放宽温控可能导致设备更热、功耗更高，长时间高负载有风险。\n\n确定吗？")) return;
   }
   // 「指定应用」模式必须先选应用
   if (cpulMode === "apps" && !cpulApps.length) {
@@ -1514,6 +1856,238 @@ async function cpulStop() {
   } catch (e) {
     endLoad(false, "失败：" + (e && e.message ? e.message : e));
   } finally { btn.disabled = false; btn.textContent = "关闭并还原"; }
+}
+
+/* ---------- 游戏记录 ---------- */
+// 记录行（v1）字段顺序见 gamerec.sh 的 end_session
+// v2 在 v1 的 18 个字段后追加对局段（最高刷新率档位）统计与静止时长
+// v3 再追加卡顿秒数、最长连续卡顿、是否有曲线
+const GREC_F = ["v","start","pkg","dur","favg10","fmin","fmax","p1","bavg","bmax","mavg","gavg","gmax","tmax","unl","bat0","bat1","chg",
+                "hz","havg10","hmin","hmax","hp1","hdur","idle","jank","jmax","curve"];
+let grecEnabled = true, grecLabels = {}, grecGameTemp = {};
+// 按游戏设的阈值存的是「相对当前温区基础阈值的差值」（毫摄氏度），不是绝对值。
+// 绝对值在换温区时会变成荒谬的阈值（同一个 55°C，机身量程 30~60，CPU 结温量程 50~95）。
+// 兼容旧记录：45000~65000 的旧值仍按绝对值理解，读出来也能正确显示。
+// 返回该游戏当前生效的绝对阈值（毫摄氏度）；没设过就返回基础阈值。
+function grecThFor(pkg) {
+  const base = (cpulProtZone === "cpu" ? cpulConf.TEMP_CPU : cpulConf.TEMP) || "55000";
+  const b = parseInt(base, 10), d = grecGameTemp[pkg];
+  if (!d) return b;
+  if (d >= 45000 && d <= 65000) return d;   // 旧格式：绝对值
+  return b + d;
+}
+
+function grecParse(line) {
+  const a = line.split("|");
+  if (!/^v[123]$/.test(a[0]) || a.length < 18) return null;
+  const o = {};
+  GREC_F.forEach((k, i) => { o[k] = k === "pkg" || k === "v" ? a[i] : (a[i] === undefined || a[i] === "" ? null : +a[i]); });
+  return o;
+}
+function grecDur(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? h + " 小时 " + m + " 分" : (m ? m + " 分 " + (s % 60) + " 秒" : s + " 秒");
+}
+function grecTime(t) {
+  const d = new Date(t * 1000), p = n => String(n).padStart(2, "0");
+  return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+const grecName = p => grecLabels[p] || appName(p);
+const ghz = m => m == null ? "—" : (m / 1000).toFixed(2) + "G";
+
+async function loadGameRec() {
+  const r = await exec('sh "' + MODDIR + '/gamerec.sh" status; echo "===CUT==="; sh "' + MODDIR + '/gamerec.sh" list;' +
+    ' echo "===CUT==="; sh "' + MODDIR + '/gamerec.sh" gametemp');
+  const [st, list, gt] = (r.stdout || "").split("===CUT===");
+  grecGameTemp = {};
+  for (const ln of (gt || "").split("\n")) {
+    const i = ln.indexOf("="); if (i > 0) { const v = parseInt(ln.slice(i + 1), 10); if (v) grecGameTemp[ln.slice(0, i).trim()] = v; }
+  }
+  // 温控阈值显示需要全局 TEMP：没打开过温控面板时 cpulConf 为空，这里补读
+  if (!cpulConf.TEMP) {
+    const c = await exec('grep "^TEMP=" "' + MODDIR + '/cpulimit.conf" 2>/dev/null');
+    const m = (c.stdout || "").match(/TEMP=(\d+)/); if (m) cpulConf.TEMP = m[1];
+  }
+  const kv = {};
+  for (const ln of (st || "").split("\n")) { const i = ln.indexOf("="); if (i > 0) kv[ln.slice(0, i)] = ln.slice(i + 1).trim(); }
+  grecEnabled = kv.ENABLED !== "0";
+  const recs = (list || "").split("\n").map(s => grecParse(s.trim())).filter(Boolean).reverse();
+
+  // 应用名：只取记录里出现过的包（dumpsys 只对最近任务有 label，取不到退回内置表/包名）
+  const need = [...new Set(recs.map(x => x.pkg).concat(kv.CUR ? [kv.CUR.split("|")[0]] : []))]
+    .filter(p => !grecLabels[p] && !dynLabels[p]);
+  if (need.length) {
+    try {
+      const lr = await exec(
+        'dumpsys activity activities 2>/dev/null | awk \'' +
+        ' /packageName=/ { n=split($0,a,"packageName="); split(a[2],b," "); pkg=b[1] }' +
+        ' /taskDescription: label="/ { if(match($0,/label="[^"]*"/)){ l=substr($0,RSTART+7,RLENGTH-8); if(l!="null"&&l!=""&&pkg!="") print pkg"|"l } }\''
+      );
+      for (const ln of (lr.stdout || "").split("\n")) {
+        const i = ln.indexOf("|"); if (i > 0) grecLabels[ln.slice(0, i).trim()] = ln.slice(i + 1).trim();
+      }
+    } catch (e) {}
+  }
+
+  // 状态行
+  const dot = !grecEnabled ? "off" : (kv.RUNNING === "1" ? "on" : "warn");
+  setDot("grecDot", dot);
+  let state, sub = "共 " + (kv.COUNT || 0) + " 局记录";
+  if (!grecEnabled) state = "已关闭";
+  else if (kv.RUNNING !== "1") state = "守护未运行";
+  else if (kv.CUR) {
+    const [p, t0] = kv.CUR.split("|");
+    state = "正在记录：" + grecName(p);
+    sub = "已开始 " + grecDur(Math.max(0, (+kv.NOW || 0) - (+t0 || 0))) + " · " + sub;
+  } else state = "待命 · 进入游戏后自动记录";
+  document.getElementById("grecState").textContent = state;
+  document.getElementById("grecSub").textContent = sub;
+  document.getElementById("grecToggle").textContent = grecEnabled ? "关闭记录" : "开启记录";
+  document.getElementById("grecUndo").style.display = kv.UNDO === "1" ? "" : "none";
+  document.getElementById("grecClear").disabled = !recs.length;
+
+  // 列表
+  const host = document.getElementById("grecList");
+  host.innerHTML = "";
+  if (!recs.length) { host.innerHTML = '<div class="empty">还没有记录，玩一局（超过 30 秒）再来看</div>'; }
+  for (const x of recs) {
+    const row = document.createElement("div");
+    row.className = "row"; row.style.cssText = "cursor:default;display:block";
+    const n = v => v == null ? "—" : v;
+    const f1 = v => v == null ? "—" : (v / 10).toFixed(1);
+    // 有对局段（最高刷新率档位）数据时以它为主：游戏大厅常跑 60Hz，整局平均会被拉低，和游戏内显示对不上
+    const seg = x.havg10 != null;
+    const fps = seg
+      ? { title: "对局 " + x.hz + "Hz", avg: f1(x.havg10), p1: n(x.hp1), min: n(x.hmin), max: n(x.hmax) }
+      : { title: "整局", avg: f1(x.favg10), p1: n(x.p1), min: n(x.fmin), max: n(x.fmax) };
+    const segNote = seg
+      ? ("对局 " + grecDur(x.hdur) + " · 整局平均 " + f1(x.favg10) + (x.idle ? " · 画面静止 " + grecDur(x.idle) + "（不计入）" : ""))
+      : (x.v === "v1" ? "旧版记录：含加载/结算等静止画面，帧率偏低" : (x.idle ? "画面静止 " + grecDur(x.idle) + "（不计入）" : ""));
+    // 耗电照实显示；插着线时掉电会偏少，加备注
+    const drop = (x.bat0 != null && x.bat1 != null) ? x.bat0 - x.bat1 : null;
+    const bat = drop == null ? "—"
+      : (drop >= 0 ? "掉电 " + drop + "%" : "充入 " + (-drop) + "%") + (x.chg ? "（期间连着充电）" : "");
+    const tmax = x.tmax == null ? "—" : (x.tmax / 1000).toFixed(1) + "°C";
+    const th = grecThFor(x.pkg);
+    const hot = x.tmax != null && x.tmax >= th;
+    // 卡顿：对局段里低于刷新率 90% 的秒数
+    const jank = x.jank == null ? "" :
+      (x.jank === 0 ? "无卡顿（全程 ≥ " + Math.round(x.hz * 0.9) + " 帧）"
+        : "卡顿 " + grecDur(x.jank) + (x.hdur ? "（占 " + (x.jank * 100 / x.hdur).toFixed(1) + "%）" : "") +
+          " · 最长连续 " + x.jmax + " 秒");
+    row.innerHTML =
+      '<div style="display:flex;align-items:baseline;gap:8px">' +
+        '<div class="name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(grecName(x.pkg)) + '</div>' +
+        '<div class="desc" style="flex:0 0 auto">' + esc(grecTime(x.start) + " · " + grecDur(x.dur)) + '</div>' +
+      '</div>' +
+      // 帧率一行：左边大号平均帧率，右边三个小数字。原来 4 列每格只有 83px，标签被挤成 2~4 行
+      '<div class="gfps">' +
+        '<div class="gavg"><b>' + fps.avg + '</b><span>' + esc(fps.title) + ' 平均帧率</span></div>' +
+        '<div class="gsm"><b>' + fps.p1 + '</b><span>1% Low</span></div>' +
+        '<div class="gsm"><b>' + fps.min + '</b><span>最低</span></div>' +
+        '<div class="gsm"><b>' + fps.max + '</b><span>最高</span></div>' +
+      '</div>' +
+      '<div class="grid4" style="margin-top:7px">' +
+        '<div><div class="k">大核 均 / 峰</div><div class="v">' + ghz(x.bavg) + " / " + ghz(x.bmax) + '</div></div>' +
+        '<div><div class="k">GPU 均 / 峰</div><div class="v">' + (x.gavg == null ? "—" : x.gavg + " / " + x.gmax + " MHz") + '</div></div>' +
+        '<div><div class="k">中核 均</div><div class="v">' + ghz(x.mavg) + '</div></div>' +
+        '<div><div class="k">满频占比</div><div class="v">' + (x.unl == null ? "—" : x.unl + "%") + '</div></div>' +
+      '</div>' +
+      (segNote ? '<div class="desc" style="margin-top:6px">' + esc(segNote) + '</div>' : '') +
+      (jank ? '<div class="desc" style="margin-top:3px">' + esc(jank) + '</div>' : '') +
+      '<div class="desc" style="margin-top:3px">机身最高 <b style="color:' + (hot ? "var(--warn)" : "inherit") + '">' + tmax + '</b>' +
+        (hot ? "（触及温控阈值）" : "") + " · " + esc(bat) + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        (x.curve ? '<button class="sbtn" data-act="curve">曲线</button>' : '') +
+        '<button class="sbtn" data-act="temp">温度阈值：' + (grecGameTemp[x.pkg] ? (grecThFor(x.pkg) / 1000).toFixed(1) + "°C" : "跟随全局") + '</button>' +
+      '</div>' +
+      '<div class="grec-curve"></div>';
+    const cbtn = row.querySelector('[data-act="curve"]');
+    if (cbtn) cbtn.addEventListener("click", () => grecToggleCurve(x, row.querySelector(".grec-curve")).catch(() => {}));
+    row.querySelector('[data-act="temp"]').addEventListener("click", () => grecEditTemp(x.pkg).catch(() => {}));
+    host.appendChild(row);
+  }
+  document.getElementById("grecPanel").classList.remove("fn-loading");
+  setFuncSum("grec", !grecEnabled ? "已关闭" : (kv.CUR ? "记录中…" : (kv.COUNT || 0) + " 局"), !grecEnabled ? "" : (kv.RUNNING === "1" ? "on" : "warn"));
+}
+
+// 曲线：帧率（实线，左轴 0~刷新率）+ 机身温度（虚线，右轴）。每点 = 10 秒。
+// csv 行：平均帧率×10,最低帧率,温度(0.1°C),大核MHz
+function grecCurveSvg(csv, hz, th) {
+  const pts = csv.trim().split("\n").map(l => l.split(",").map(v => v === "" ? null : +v));
+  if (pts.length < 2) return '<div class="desc">数据点太少，玩久一点再看</div>';
+  const W = 320, H = 120, n = pts.length;
+  const fTop = Math.max(hz || 0, ...pts.map(p => (p[0] || 0) / 10)) || 60;
+  const ts = pts.map(p => p[2]).filter(v => v != null);
+  const tLo = Math.min(...ts, th ? th * 10 - 30 : 999) - 5, tHi = Math.max(...ts, th ? th * 10 : 0) + 5;
+  const x = i => (i / (n - 1) * W).toFixed(1);
+  const yF = v => (H - v / 10 / fTop * H).toFixed(1);
+  const yT = v => (H - (v - tLo) / (tHi - tLo) * H).toFixed(1);
+  const line = (sel, y) => {
+    let d = "", pen = false;
+    pts.forEach((p, i) => { const v = sel(p); if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i) + " " + y(v); pen = true; });
+    return d;
+  };
+  const thLine = th ? '<line x1="0" x2="' + W + '" y1="' + yT(th * 10) + '" y2="' + yT(th * 10) + '" stroke="var(--danger)" stroke-width=".6" stroke-dasharray="2 3"/>' : "";
+  const mins = Math.round(n * 10 / 60);
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;margin-top:8px;background:var(--chip);border-radius:9px">' +
+    thLine +
+    '<path d="' + line(p => p[2], yT) + '" fill="none" stroke="var(--warn)" stroke-width="1.2" stroke-dasharray="3 2"/>' +
+    '<path d="' + line(p => p[0], yF) + '" fill="none" stroke="var(--accent)" stroke-width="1.5"/>' +
+    '</svg>' +
+    '<div class="desc" style="display:flex;justify-content:space-between;margin-top:3px">' +
+      '<span><b style="color:var(--accent)">━</b> 帧率（0~' + Math.round(fTop) + '）</span>' +
+      '<span><b style="color:var(--warn)">┅</b> 机身 ' + (Math.min(...ts) / 10).toFixed(1) + '~' + (Math.max(...ts) / 10).toFixed(1) + '°C</span>' +
+      '<span>约 ' + mins + ' 分钟</span></div>';
+}
+
+async function grecToggleCurve(x, box) {
+  if (box.dataset.open) { box.innerHTML = ""; delete box.dataset.open; return; }
+  box.dataset.open = "1";
+  box.innerHTML = '<div class="desc" style="margin-top:6px">读取中…</div>';
+  const r = await exec('sh "' + MODDIR + '/gamerec.sh" curve ' + Number(x.start));
+  const th = grecThFor(x.pkg) / 1000;
+  box.innerHTML = (r.stdout || "").trim() ? grecCurveSvg(r.stdout, x.hz, th) : '<div class="desc">没有曲线数据</div>';
+}
+
+// 按游戏设置温度阈值。
+// 存的是相对全局基础阈值的「差值」而不是绝对值 —— 这样换个温区机器（机身↔CPU 结温）时
+// 仍然是「比全局宽/紧多少」，不会突然变成一个不合理的绝对温度。
+async function grecEditTemp(pkg) {
+  const isCpu = cpulProtZone === "cpu";
+  const base = (isCpu ? cpulConf.TEMP_CPU : cpulConf.TEMP) || (isCpu ? "80000" : "55000");
+  const b = parseInt(base, 10);
+  const lo = isCpu ? 65 : 45, hi = isCpu ? 95 : 65;   // 提示区间：按当前档位给
+  const curD = grecGameTemp[pkg];
+  // 旧格式（绝对值）先换算成差值再显示，用户看到的永远是「相对全局多少」
+  let curAbs = null;
+  if (curD) curAbs = (curD >= 45000 && curD <= 65000) ? curD : (b + curD);
+  const v = prompt(
+    grecName(pkg) + " 的温度阈值\n" +
+    "当前保护温区是" + (isCpu ? "CPU 结温" : "机身/外壳") + "，全局阈值 " + (b / 1000).toFixed(1) + "°C\n" +
+    "填绝对值（" + lo + "~" + hi + "°C），留空 = 跟随全局",
+    curAbs ? (curAbs / 1000).toFixed(1) : "");
+  if (v === null) return;
+  const s = v.trim();
+  if (s === "") { await grecCmd("gametemp " + pkg + " del", "正在恢复为全局阈值…"); return; }
+  const c = parseFloat(s);
+  if (!(c >= lo && c <= hi)) { toast("请输入 " + lo + "~" + hi + " 之间的数字"); return; }
+  const abs = Math.round(c * 1000);
+  if (c > b / 1000 &&
+      !confirm("阈值 " + c.toFixed(1) + "°C 高于全局 " + (b / 1000).toFixed(1) +
+               "°C。\n放宽温控会更热、更耗电，长时间高负载有风险。\n\n确定吗？")) return;
+  // 存差值：正=比全局宽松，负=比全局严格。范围限制在 gamerec.sh 接受的 -20000~15000。
+  let d = abs - b;
+  if (d > 15000) d = 15000;
+  if (d < -20000) d = -20000;
+  await grecCmd("gametemp " + pkg + " " + d, "正在保存…");
+}
+
+async function grecCmd(arg, msg) {
+  showLoad(msg); await paint();
+  const r = await exec('sh "' + MODDIR + '/gamerec.sh" ' + arg);
+  await loadGameRec().catch(() => {});
+  endLoad(r.errno === 0, (r.stdout || "").trim() || (r.errno === 0 ? "完成" : "失败"));
 }
 
 /* ---------- 云控残留清理 ---------- */
@@ -1689,20 +2263,24 @@ async function cleanRestore() {
 
   // 温控性能
   document.getElementById("cpulTemp").addEventListener("input", () => {
-    document.getElementById("cpulTempTag").textContent = fmtTempC();
+    document.getElementById("cpulTempVal").textContent = fmtTempC();
     cpulSyncPreset();
     updateCpulBtn();
   });
   const setTemp = (v) => {
     document.getElementById("cpulTemp").value = v;
-    document.getElementById("cpulTempTag").textContent = (v / 1000).toFixed(1) + "°C";
+    document.getElementById("cpulTempVal").textContent = (v / 1000).toFixed(1) + "°C";
     cpulSyncPreset(); updateCpulBtn();
   };
   document.getElementById("cpulPresetCool").addEventListener("click", () => setTemp(50000));
   document.getElementById("cpulPresetStd").addEventListener("click", () => setTemp(55000));
   document.getElementById("cpulPresetHot").addEventListener("click", () => setTemp(60000));
+  document.getElementById("cpulTempCpu").addEventListener("input", () => {
+    document.getElementById("cpulTempCpuVal").textContent = fmtTempCpu();
+    updateCpulBtn();
+  });
+  document.getElementById("cpulZoneAuto").addEventListener("click", () => { cpulZone = "auto"; cpulSyncZoneTab(); updateCpulBtn(); });
   document.getElementById("cpulZoneSkin").addEventListener("click", () => { cpulZone = "skin-msm-therm"; cpulSyncZoneTab(); updateCpulBtn(); });
-  document.getElementById("cpulZoneShell").addEventListener("click", () => { cpulZone = "shell_front"; cpulSyncZoneTab(); updateCpulBtn(); });
   const setMode = (m) => { cpulMode = m; cpulSyncModeTab(); updateCpulBtn(); };
   document.getElementById("cpulModeGlobal").addEventListener("click", () => setMode("global"));
   document.getElementById("cpulModeGame").addEventListener("click", () => setMode("game"));
@@ -1711,7 +2289,18 @@ async function cleanRestore() {
   document.getElementById("cpulApply").addEventListener("click", cpulApplyConf);
   document.getElementById("cpulStop").addEventListener("click", cpulStop);
   document.getElementById("cpulRefresh").addEventListener("click", () => { loadCpul().catch(() => {}); });
+
+  // 游戏记录
+  document.getElementById("grecRefresh").addEventListener("click", () => { loadGameRec().catch(() => {}); });
+  document.getElementById("grecToggle").addEventListener("click", () =>
+    grecCmd(grecEnabled ? "off" : "on", grecEnabled ? "正在关闭游戏记录…" : "正在开启游戏记录…"));
+  document.getElementById("grecClear").addEventListener("click", () => {
+    if (!confirm("清空全部游戏记录？\n\n清空前会另存一份，可以点「恢复清空」找回。")) return;
+    grecCmd("clear", "正在清空…");
+  });
+  document.getElementById("grecUndo").addEventListener("click", () => grecCmd("undo", "正在恢复…"));
   renderFuncGrid();
+  loadFuncSums().catch(() => {});
 })();
 </script>
 </body>

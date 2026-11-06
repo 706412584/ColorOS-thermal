@@ -1,7 +1,7 @@
 id=oplus-cloud-block
 name=ColorOS 温控与云控
-version=1.7.10
-versionCode=180
+version=1.7.11
+versionCode=181
 author=酷安@谋事在人成事在天
-description=ColorOS/一加系列通用工具：①解除出厂 CPU 频率上限（大核 58%→100%，两层天花板，带温度保护与一键还原）②拦截 OTA/系统静默更新/云控（云控按组件拦截，不影响账号登录与游戏联运）③内存/CPU 面板与一键清理 ④云控残留清理（可回滚）。点开 WebUI 使用，重启后自动重新生效。
+description=ColorOS/一加系列通用工具：①解除出厂 CPU 频率上限（大核 58%→100%，两层天花板，带温度保护与一键还原）②拦截 OTA/系统静默更新/云控（云控按组件拦截，不影响账号登录与游戏联运）③内存/CPU 面板与一键清理 ④云控残留清理（可回滚）⑤游戏记录（每局帧率/1% Low/CPU·GPU 频率/温度/耗电）。点开 WebUI 使用，重启后自动重新生效。
 updateJson=https://gitee.com/wu-yongchengsvip/oplus-thermal/raw/master/update.json

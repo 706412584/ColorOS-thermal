@@ -50,9 +50,32 @@ done
 INSTALLED=$(pm list packages --user 0 2>/dev/null)
 DISABLED=$(pm list packages -d --user 0 2>/dev/null)
 
+# 一次性迁移（v1.7.11）：旧版发布包默认禁用 com.oplus.pantanal.ums，会让桌面/主题卡片、流体云不显示。
+# 新版默认不拦截它。本模块平时从不主动启用包，所以升级上来的用户它仍是禁用状态，这里恢复一次。
+# 条件：当前被禁用 且 清单里没有它（用户在 WebUI 里主动勾选拦截的不动）。做完写标记，只执行一次。
+MIG=/data/adb/oplus-cloud-block-data/migrate-1.7.11-pantanal.done
+if [ ! -f "$MIG" ]; then
+  P=com.oplus.pantanal.ums
+  case "$DISABLED" in
+    *"package:$P"*)
+      # 只看去掉注释后的有效行（toybox grep 不支持 \| 交替，用 sed 先剥注释再整行匹配）
+      if ! sed 's/#.*//; s/[[:space:]]//g' "$LIST" 2>/dev/null | grep -qxF "$P"; then
+        if pm default-state --user 0 "$P" </dev/null >/dev/null 2>&1 \
+           || pm enable --user 0 "$P" </dev/null >/dev/null 2>&1; then
+          log "迁移：已恢复 $P（桌面卡片云配置，新版默认不拦截）"
+          DISABLED=$(pm list packages -d --user 0 2>/dev/null)
+        else
+          log "迁移：恢复 $P 失败"
+        fi
+      fi ;;
+  esac
+  mkdir -p "${MIG%/*}" && : >"$MIG"
+fi
+
 changed=0
 skipped=0
 missing=0
+comps=0
 
 while IFS= read -r raw || [ -n "$raw" ]; do
   line=${raw%%#*}
@@ -82,9 +105,9 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   # 组件级：包本身保持启用，只关单个组件。
   # 注意 disable-user 对组件无效（返回 default，不写入），必须用 disable。
   if [ "$pkg" != "$entry" ]; then
+    # pm disable 对组件是幂等的，无法区分「新禁用」和「原本就禁用」，单独计数
     if pm disable --user 0 "$entry" </dev/null >/dev/null 2>&1; then
-      log "已禁用组件：$entry"
-      changed=$((changed + 1))
+      comps=$((comps + 1))
     else
       log "错误：禁用组件失败 $entry"
     fi
@@ -108,7 +131,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   fi
 done <"$LIST"
 
-log "---- 完成：新禁用=$changed 原本已禁用=$skipped 未安装=$missing ----"
+log "---- 完成：新禁用=$changed 原本已禁用=$skipped 组件已确认禁用=$comps 未安装=$missing ----"
 
 # 重新读取，报告当前实际禁用的总数
 FINAL=$(pm list packages -d --user 0 2>/dev/null | grep -c 'package:' 2>/dev/null)
@@ -119,19 +142,37 @@ log "当前用户 0 已禁用包总数：${FINAL:-未知}"
 #    （大核被压到 1843200=硬件 58%），以及游戏场景的 /proc/game_opt 上限。
 #    写入立即生效、无需重启。守护内含温度保护：按 skin-msm-therm(机身) 判定，
 #    超阈值自动收回，降温后恢复。
-if [ -x "$MODDIR/cpulimit.sh" ]; then
-  log "启动 CPU 上限解除守护"
-  OUT=$(sh "$MODDIR/cpulimit.sh" start 2>&1)
-  log "CPU上限：$OUT"
+if [ -f "$MODDIR/cpulimit.sh" ]; then
+  # 用 ensure 而不是 start：start 会强制写 ENABLE=1，会把用户在 WebUI 里关掉的功能重新打开
+  log "CPU 上限解除：按配置检查启动"
+  sh "$MODDIR/cpulimit.sh" ensure >/dev/null 2>&1
+fi
 
-  if [ ! -f "$MODDIR/no_watchdog" ]; then
-    (
-      trap 'exit 0' TERM INT
-      while :; do
-        sleep 120
-        sh "$MODDIR/cpulimit.sh" ensure >/dev/null 2>&1
-      done
-    ) &
-    log "CPU上限看护循环已启动（每 120s 检查一次）"
-  fi
+# 5. 游戏记录守护（开关在数据目录的 gamerec.off，WebUI 可切换）
+if [ -f "$MODDIR/gamerec.sh" ]; then
+  log "游戏记录：按开关检查启动"
+  sh "$MODDIR/gamerec.sh" ensure >/dev/null 2>&1
+fi
+
+# 6. 保持 USB 调试 / 无线调试（WebUI 开关，默认关；开关文件在数据目录）
+[ -f "$MODDIR/adbkeep.sh" ] && sh "$MODDIR/adbkeep.sh" check >/dev/null 2>&1
+
+# 看护循环：每 120s 检查两个守护是否还在；保持 USB 调试打开时每 15s 查一次 adb 开关
+# （开关没开时只是一次 [ -f ] 判断，不 fork）
+if [ ! -f "$MODDIR/no_watchdog" ]; then
+  (
+    trap 'exit 0' TERM INT
+    n=0
+    while :; do
+      sleep 15
+      n=$((n + 1))
+      if [ -f /data/adb/oplus-cloud-block-data/adbkeep.on ] || [ -f /data/adb/oplus-cloud-block-data/adbkeep.wifi ]; then
+        sh "$MODDIR/adbkeep.sh" check >/dev/null 2>&1
+      fi
+      [ $((n % 8)) -eq 0 ] || continue
+      [ -f "$MODDIR/cpulimit.sh" ] && sh "$MODDIR/cpulimit.sh" ensure >/dev/null 2>&1
+      [ -f "$MODDIR/gamerec.sh" ] && sh "$MODDIR/gamerec.sh" ensure >/dev/null 2>&1
+    done
+  ) &
+  log "看护循环已启动（守护每 120s 检查一次）"
 fi

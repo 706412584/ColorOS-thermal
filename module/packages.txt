@@ -21,4 +21,4 @@ com.heytap.htms/com.heytap.msp.cloudctrl.ipc.CloudCtrlService
 com.heytap.htms/com.heytap.cloudconfig.v3.kit.ipc.CloudCtrlV3Service
 com.heytap.htms/com.heytap.msp.cloudctrlreport.service.CloudConfigReportService
 com.oplus.statistics.rom   # ROM 级埋点与统计上报
-com.oplus.pantanal.ums     # 桌面卡片云配置下发
+# com.oplus.pantanal.ums（桌面卡片云配置）默认不拦截：禁用后桌面/主题的组件卡片、流体云会不显示。

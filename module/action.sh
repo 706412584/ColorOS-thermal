@@ -5,7 +5,7 @@
 MODDIR=${0%/*}
 LIST="$MODDIR/packages.txt"
 
-echo "=== 云控拦截 ==="
+echo "=== ColorOS 温控与云控 ==="
 echo "清单：$LIST"
 echo
 
@@ -81,7 +81,7 @@ echo "恢复某个包：pm enable <包名>"
 echo "恢复某个组件：pm enable <包名/类名>"
 
 echo
-if [ -x "$MODDIR/mem.sh" ]; then
+if [ -f "$MODDIR/mem.sh" ]; then
   echo "=== 内存概览 ==="
   sh "$MODDIR/mem.sh" overview | while IFS='=' read -r k v; do
     case "$k" in
@@ -97,7 +97,7 @@ if [ -x "$MODDIR/mem.sh" ]; then
 fi
 
 echo
-if [ -x "$MODDIR/cloudclean.sh" ]; then
+if [ -f "$MODDIR/cloudclean.sh" ]; then
   echo "=== 云控残留清理 ==="
   echo "查看残留：sh $MODDIR/cloudclean.sh status"
   echo "备份后清理（可完整回滚）：sh $MODDIR/cloudclean.sh clean"
@@ -105,7 +105,7 @@ if [ -x "$MODDIR/cloudclean.sh" ]; then
 fi
 
 echo
-if [ -x "$MODDIR/cpulimit.sh" ]; then
+if [ -f "$MODDIR/cpulimit.sh" ]; then
   sh "$MODDIR/cpulimit.sh" status 2>/dev/null | head -12
   echo
   echo "开关：sh $MODDIR/cpulimit.sh {start|stop}   配置：$MODDIR/cpulimit.conf"
