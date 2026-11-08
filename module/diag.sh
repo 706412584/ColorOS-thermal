@@ -7,7 +7,13 @@
 # 隐私：不收集账号、手机号、IMEI/序列号、应用列表、通讯录、位置；
 #       模块日志里出现的包名只有本模块拦截/记录的那些。报告是纯文本，发出前可以自己打开看。
 
+# 模块目录。用相对路径调用（cd 进去后 sh diag.sh）时 ${0%/*} 会是 "."，整份报告会失效 ——
+# 所以取不到绝对路径时退回本模块的标准安装位置。
 MODDIR=${0%/*}
+case "$MODDIR" in
+  /*) ;;
+  *) MODDIR=/data/adb/modules/oplus-cloud-block ;;
+esac
 DATA=/data/adb/oplus-cloud-block-data
 LOG=/data/adb/oplus-cloud-block.log
 OUTDIR=/sdcard/Download
@@ -59,6 +65,68 @@ echo "Magisk：$(magisk -v 2>/dev/null || echo 无)"
 grep -E '^(version|versionCode)=' "$MODDIR/module.prop"
 for f in disable remove update skip_mount; do [ -e "$MODDIR/$f" ] && echo "模块标记：$f"; done
 ls -la "$MODDIR" 2>&1
+
+sec "已安装的模块（找出别的调度/性能模块）"
+# 用户的"被锁频"经常不是固件干的，而是同时装了别的调度模块（实测 PLK110 是 yumi 把
+# 60 多个 App 挂 powersave、perf_ceil:0.70）。报告里不列出来，就只能靠猜。
+# 只看模块目录名与各自 module.prop 的 name/id，不读任何配置内容。
+for d in /data/adb/modules/*; do
+  [ -d "$d" ] || continue
+  b=${d##*/}
+  [ -f "$d/disable" ] && s=已停用 || s=启用
+  nm=""; [ -f "$d/module.prop" ] && nm=$(sed -n 's/^name=//p' "$d/module.prop" 2>/dev/null | head -1)
+  id=""; [ -f "$d/module.prop" ] && id=$(sed -n 's/^id=//p' "$d/module.prop" 2>/dev/null | head -1)
+  printf '  %-28s %s  %s (%s)\n' "$b" "$s" "${nm:-无 name}" "${id:-无 id}"
+done
+ls -d /data/adb/modules_update/* 2>/dev/null | sed 's/^/  待更新：/'
+# 常见"会改调度/频率"的第三方模块，单独点出来，省得看清单时漏掉
+for k in yumi scene asoul opti perfmgr fas-rs encored uperf sched; do
+  for d in /data/adb/modules/*$k*; do [ -d "$d" ] && echo "  ⚠ 疑似调度模块：${d##*/}"; done
+done
+
+sec "内核限频特性实测（不看 defconfig，直接问本机内核）"
+# ★ 为什么要有这段：同一个 SoC 的不同机型、不同 ROM 版本，**加载的限频驱动不一样**
+#   （实测 sm8850 仓里 canoe 开了 OPLUS_FEATURE_CEILING_FREE，而 kalama/mt6895 都没开）。
+#   而 defconfig 是不可靠的线索：① 机型代号与 defconfig 目录名对不上（k6895v1_64 vs mt6895）
+#   ② 公开的 defconfig 未必等于设备实际用的那份。
+#   用途：拿到一份报告就知道「这台机到底有哪些限频器」，不用按机型猜。
+#
+# ★ 主判据：`/sys/module/<名字>` 目录是否存在 = 该驱动**此刻是否已加载进内核**。
+#   这是最直接、最准的探针（零 fork，一次 [ -d ] 就够）：
+#   驱动的 sysfs 目录由内核在模块加载时创建，加载了就有、没加载就没有。
+#
+# ★ 为什么**不用** /proc/config.gz（我原先的想法，实测被推翻）：
+#   OPLUS 的这些限频驱动大多是 **vendor 侧独立 .ko**（`oplus_omrg` 实测是模块，
+#   `/sys/module/oplus_omrg/` 存在），而 **config.gz 只反映主内核镜像的配置**，
+#   **不含独立模块** —— PJA110 上 config.gz 里 `grep -i omrg` 是空，
+#   但 oplus_omrg 明明加载着。所以拿 config.gz 判断限频驱动会**系统性漏报**。
+#   （config.gz 对"主内核内建了什么"仍然有效，但不是我们要回答的问题。）
+if [ -d /sys/module ]; then
+  echo "── 限频/调度驱动是否已加载（看 /sys/module/<名>；空=未加载）"
+  for m in oplus_omrg cpufreq_bouncing oplus_freqqos_monitor oplus_bsp_task_sched \
+           oplus_bsp_frame_boost oplus_ipa_thermal oplus_omrg_trace horae \
+           qti_cpufreq_cdev qti_devfreq_cdev thermal_pause msm_performance \
+           mtk_fpsgo fpsgo mtk_core_ctl teeperf; do
+    [ -d "/sys/module/$m" ] && printf '  %-26s 已加载\n' "$m"
+  done
+  echo "  （只列已加载的；没列出的就是本机没有/没加载）"
+  echo "  已加载的 oplus* 模块总数：$(ls /sys/module 2>/dev/null | grep -c '^oplus')"
+fi
+
+# 补充判据：符号表（能查到"编进去了但没加载"的驱动；也能看到
+# `/sys/module` 里没有的内部符号，如导出给别人的函数）。
+KS_HEAD=$(head -1 /proc/kallsyms 2>/dev/null)
+if [ -n "$KS_HEAD" ]; then
+  echo "  ── 符号表补充（约 $(wc -l < /proc/kallsyms) 个符号；看导出函数在不在）"
+  # 注：kptr_restrict=2 时地址被抹成 0，但**符号名仍在** → 只判符号存在则不受影响，
+  # 不涉及内存布局，可安全外发。这里只挑"驱动级"特征符号，避免刷屏。
+  for sym in cb_ceiling_free cb_cap omrg_update_freq_range omrg_check_thermal_limit \
+             omrg_idle omrg_thermal_limit; do
+    n=$(grep -c "$sym" /proc/kallsyms 2>/dev/null)
+    [ "${n:-0}" -gt 0 ] && printf '    %-30s %s\n' "$sym" "$n"
+  done
+  echo "    （上面没列出的 = 该符号不在符号表里）"
+fi
 
 sec "拦截清单（packages.txt 有效行）"
 sed 's/#.*//; s/[[:space:]]//g; /^$/d' "$MODDIR/packages.txt" 2>&1
@@ -185,6 +253,29 @@ for f in /sys/kernel/fpsgo/common/fpsgo_status /sys/kernel/fpsgo/common/fpsgo_en
          /sys/kernel/fpsgo/common/fpsgo_game_enable /sys/kernel/fpsgo/fstb/fpsgo_status \
          /sys/kernel/fpsgo/fstb/fstb_soft_level /sys/kernel/fpsgo/fstb/fstb_self_ctrl_fps_enable_by_pid; do zprobe "$f"; done
 [ -d /sys/kernel/fpsgo ] && { echo "  /sys/kernel/fpsgo 子项："; ls /sys/kernel/fpsgo 2>/dev/null | tr '\n' ' '; echo; }
+
+# 全量枚举 fpsgo 下所有可读文件（含各子目录一层）。
+# ★ 动机：天玑上「游戏记录」的帧率一直是空的 —— SurfaceFlinger 1013 已被 Android 16 移除、
+#   高通那条 /sys/class/drm/sde-crtc-*/measured_fps 天玑没有，所以想从 fpsgo 找真实帧率/帧计数。
+#   但事先不知道哪个节点带 fps，猜名字会一直猜不中 → 直接把现场全带回来。
+#   注意排除 write-only/开关类会阻塞的节点：只读普通文件，跳过目录与 /proc 式特殊文件。
+if [ -d /sys/kernel/fpsgo ]; then
+  echo "  ── fpsgo 全量探测（找真实帧率节点用；空值=不可读或本来为空）"
+  for d in /sys/kernel/fpsgo /sys/kernel/fpsgo/*/; do
+    [ -d "$d" ] || continue
+    for f in "$d"*; do
+      [ -f "$f" ] || continue
+      [ -s "$f" ] || continue
+      v=$(head -c 100 "$f" 2>/dev/null | tr '\n' ' ')
+      [ -n "$v" ] && printf '    %-56s = %s\n' "${f#/sys/kernel/fpsgo/}" "$v"
+    done
+  done
+  echo "  ── 其他可能的帧率来源（供天玑用）"
+  for f in /proc/fpsgo/fps /proc/mtk_fpsgo/fps /sys/kernel/fpsgo/xgf/xgf_fps \
+           /sys/kernel/fpsgo/composer/fps /sys/kernel/fpsgo/minitop/fps; do
+    [ -e "$f" ] && zprobe "$f"
+  done
+fi
 echo "── GBE（联发科游戏加速引擎）+ 游戏态温控余量"
 for f in /sys/kernel/gbe/gbe_enable1 /sys/kernel/gbe/gbe_enable2 /sys/kernel/gbe/gbe_thrm_hdrm_thrs \
          /sys/kernel/gbe/gbe2_fg_pid /sys/kernel/gbe/thermal_remove; do zprobe "$f"; done
@@ -401,13 +492,20 @@ sec "谁在实际生效（我们那层 vs OMRG 那层）"
 _f=$(cat /sys/kernel/msm_performance/parameters/cpu_max_freq 2>/dev/null)
 _n0=$(printf '%s\n' "$_f" | tr ' ' '\n' | sed -n 's/^0://p')
 _p0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null)
-_p7=$(cat /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null)
+# 最后一个 policy（不写死 policy7 —— 2 簇机没有 policy7，会显示"读不到"，看着像数据丢了）
+# 实测 PMS110/canoe 只有 policy0(cpu0-5) 与 policy6(cpu6-7)。
+_pN=""; _pNv=""
+for _p in /sys/devices/system/cpu/cpufreq/policy*; do
+  [ -d "$_p" ] || continue
+  _pN=${_p##*/policy}
+  _pNv=$(cat "$_p/scaling_max_freq" 2>/dev/null)
+done
 # 出厂备份（模块首次开启时保存的原值）。节点值低于它 = 有别的东西在我们之后又压低了。
 _bak=$(sed 's/[[:space:]]*$//' "$DATA/cpu_max_freq.orig" 2>/dev/null)
 _b0=$(printf '%s\n' "$_bak" | tr ' ' '\n' | sed -n 's/^0://p')
 echo "  出厂备份 cpu0           = ${_b0:-无备份}"
 echo "  msm_performance 节点 cpu0 = ${_n0:-读不到}"
-echo "  policy0 scaling_max_freq  = ${_p0:-读不到}   policy7 = ${_p7:-读不到}"
+echo "  policy0 scaling_max_freq  = ${_p0:-读不到}   policy${_pN:-?} = ${_pNv:-读不到}"
 if [ -n "$_b0" ] && [ -n "$_n0" ] && [ "$_n0" != "9999999" ] && [ "$_n0" -lt "$_b0" ] 2>/dev/null; then
   echo "  → ⚠️ 节点(${_n0}) 低于出厂备份(${_b0})：模块还原后又被别的链路压低了（非本模块所为）"
 fi
@@ -528,6 +626,92 @@ for z in /sys/class/thermal/thermal_zone*; do
   printf '  z%-3s %-22s = %s\n' "${z##*thermal_zone}" "$t" "$v"
   n=$((n + 1)); [ $n -ge 70 ] && { echo "  …（本机温区超过 70 个，其余省略）"; break; }
 done
+
+sec "与官方内核设备树比对（平台结构参照表）"
+# 参照表由 OnePlusOSS 公开的内核设备树自动生成（见 module 里的 platform-ref.txt）。
+# 作用：**不用实机、不用拆 ROM**，先知道"这个平台本该有哪些温区、分几簇"，
+# 再和本机实际对照 —— 差出来的就是线索：
+#   表里有、本机没有 → 该型号编译时没启用（正常，不同机型裁剪不同）
+#   本机有、表里没有 → 驱动运行时注册的（如 oplus explorer），或参照表没覆盖到的机型
+# 只读。参照表缺失时整段跳过，不影响报告其余部分。
+REF="$MODDIR/platform-ref.txt"
+PLAT=$(getprop ro.board.platform)
+# 主键是 ro.board.platform（高通取平台代号 kalama/canoe/…，天玑取 SoC 编号）。
+# 参照表里"未验证过代号"的平台再拿 ro.soc.model / ro.hardware 兜底匹配一次。
+SOCMODEL=$(getprop ro.soc.model)
+HARDWARE=$(getprop ro.hardware)
+echo "ro.board.platform = ${PLAT:-未知}   ro.soc.model = ${SOCMODEL:-未知}"
+if [ ! -f "$REF" ]; then
+  echo "参照表缺失（$REF）—— 跳过比对"
+elif [ -z "$PLAT" ] && [ -z "$SOCMODEL" ]; then
+  echo "取不到 ro.board.platform / ro.soc.model —— 跳过比对"
+else
+  # 在参照表里按 aliases（第 2 列）找本机平台行；依次尝试三个属性，命中即用
+  LINE=$(awk -F'\t' -v p="$PLAT" -v s="$SOCMODEL" -v h="$HARDWARE" '
+    /^#/ { next }
+    function hit(v,   n, a, i) {
+      if (v == "") return 0
+      n = split($2, a, ",")
+      for (i = 1; i <= n; i++) if (a[i] == v) return 1
+      return 0
+    }
+    { if (hit(p) || hit(s) || hit(tolower(h))) { print; exit } }
+  ' "$REF" 2>/dev/null)
+  if [ -z "$LINE" ]; then
+    echo "参照表未收录本平台（$PLAT / ${SOCMODEL:-无}）。现已收录："
+    awk -F'\t' '/^#/ { next } { printf "  %s (%s)\n", $1, $2 }' "$REF" 2>/dev/null
+    echo "若这是新机型，把本报告发给作者即可补录。"
+  else
+    CANON=$(printf '%s' "$LINE" | cut -f1)
+    CLU=$(printf '%s' "$LINE" | cut -f3)
+    CPUS=$(printf '%s' "$LINE" | cut -f4)
+    HW=$(printf '%s' "$LINE" | cut -f5)
+    REFZ=$(printf '%s' "$LINE" | cut -f6)
+    echo "命中平台：$CANON（参照表来自该平台官方内核设备树）"
+    echo "  参照表：$CLU 个簇 / $CPUS 个 CPU / cpufreq-hw=$HW"
+    # 本机实际
+    echo "  本机实际："
+    np=0
+    for p in /sys/devices/system/cpu/cpufreq/policy*; do
+      [ -d "$p" ] || continue
+      np=$((np + 1))
+      echo "    $(basename "$p"): cpus=$(cat $p/related_cpus 2>/dev/null) hw=$(cat $p/cpuinfo_max_freq 2>/dev/null)"
+    done
+    [ "$np" = "$CLU" ] && echo "    ✓ 簇数与参照表一致（$np）" || echo "    ⚠ 簇数不一致：本机 $np，参照表 $CLU"
+    # 温区差异
+    ZFILE=/data/local/tmp/.diagz.$$
+    for z in /sys/class/thermal/thermal_zone*; do
+      t=""; read -r t 2>/dev/null <"$z/type"
+      [ -n "$t" ] && echo "$t"
+    done | sort -u >"$ZFILE"
+    echo "  温区比对（参照表 $(printf '%s' "$REFZ" | wc -w) 项，本机 $(wc -l <"$ZFILE") 个）："
+    # 本机有、参照表没有
+    MISS=""
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      case " $REFZ " in *" $t "*) ;; *) MISS="$MISS $t" ;; esac
+    done <"$ZFILE"
+    # 参照表有、本机没有（只看像温度的，过滤掉 cooling-map 之类噪声）
+    ONLY=""
+    for t in $REFZ; do
+      grep -qxF "$t" "$ZFILE" 2>/dev/null && continue
+      case "$t" in *ntc*|*therm*|*skin*|*shell*|*board*|*soc*|*cpu*|*gpu*|*batt*|*charg*|*pa|pa_*) ONLY="$ONLY $t" ;; esac
+    done
+    rm -f "$ZFILE"
+    if [ -n "$MISS" ]; then
+      echo "    本机有、参照表没有（多为驱动运行时注册，非异常）："
+      printf '      %s\n' $MISS
+    else
+      echo "    ✓ 本机所有温区都能在参照表里找到"
+    fi
+    if [ -n "$ONLY" ]; then
+      echo "    参照表有、本机没有（该型号未启用，正常；列出来供对照）："
+      printf '      %s\n' $ONLY | head -20
+      c=$(printf '%s\n' $ONLY | wc -l)
+      [ "$c" -gt 20 ] && echo "      …（共 $c 项，只列前 20）"
+    fi
+  fi
+fi
 
 sec "GPU / 显示"
 echo "── GPU 频率（高通 kgsl / 天玑 GED）"

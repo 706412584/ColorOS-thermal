@@ -286,10 +286,7 @@
     </div>
     <div class="row" style="cursor:default;display:block">
       <div class="memlabel">当前上限 <b id="cpulState">—</b></div>
-      <div class="grid4" style="margin-top:4px">
-        <div><div class="k">小核 上限/满频</div><div class="v" id="cpulC0">—</div></div>
-        <div><div class="k">中核 上限/满频</div><div class="v" id="cpulC4">—</div></div>
-        <div><div class="k">大核 上限/满频</div><div class="v" id="cpulC7">—</div></div>
+      <div class="grid4" style="margin-top:4px" id="cpulGrid">
         <div><div class="k" id="cpulTempReadK">机身 / 外壳</div><div class="v" id="cpulTempRead">—</div></div>
       </div>
     </div>
@@ -1095,7 +1092,7 @@ function setFuncSum(id, text, state) {
 }
 async function loadFuncSums() {
   const r = await exec(
-    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null | grep -E "^(状态|当前上限|UNSUPPORTED|SKIN_TEMP)"; echo "===CUT==="; ' +
+    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null | grep -E "^(状态|配置|UNSUPPORTED|LAYER_ON|PLATFORM|CAPPED|CAP_INFO|前台游戏|SKIN_TEMP|ZONE_T)"; echo "===CUT==="; ' +
     'sh "' + MODDIR + '/mem.sh" overview 2>/dev/null; echo "===CUT==="; ' +
     'sh "' + MODDIR + '/gamerec.sh" status 2>/dev/null');
   const [c, m, g] = (r.stdout || "").split("===CUT===");
@@ -1108,7 +1105,9 @@ async function loadFuncSums() {
     // 保护温区可能不是机身（新机型上没有 skin-msm-therm）：标出是哪个，否则用户看不懂这个温度
     const zt = (c.match(/ZONE_T=(\S+)/) || [])[1];
     const tt = t ? " · " + (t / 1000).toFixed(1) + "°C" + (zt === "cpu" ? "(CPU)" : "") : "";
-    const unl = /当前上限：.*9999999/.test(c);
+    // LAYER_ON 由脚本给（高通=节点解锁+只读锁；天玑=各 policy 上限已放开+governor 已换）。
+    // 不能再用「当前上限里有 9999999」猜 —— 天玑压根没有那个节点。
+    const unl = /^LAYER_ON=1$/m.test(c);
     const cap = /^CAPPED=1$/m.test(c);
     // 只有在「本应满频」时才提示被压，否则「仅游戏」模式没开游戏时会误报
     const fg = (c.match(/前台游戏 = (\S+)/) || [])[1] || "";
@@ -1761,7 +1760,10 @@ async function loadCpul() {
 function renderCpul(st) {
   const en = cpulConf.ENABLE === "1";
   const running = /状态：运行中/.test(st);
-  const unlocked = /9999999/.test((st.match(/当前上限：(.*)/) || [])[1] || "");
+  // LAYER_ON 由脚本给（高通=节点解锁+只读锁；天玑=各 policy 上限已放开+governor 已换）。
+  // 不能再用「当前上限里有 9999999」判断 —— 天玑没有 msm_performance 这个节点。
+  const unlocked = /^LAYER_ON=1$/m.test(st);
+  const isMtk = /^PLATFORM=mtk$/m.test(st);
   // 实际上限有没有顶到硬件上限（脚本给的 CAPPED/CAP_INFO）。
   // 不能只看节点 —— 节点是 9999999 但我们那层之外还有链路在压时，
   // 报"已满频"就是骗用户（实测 Ace 2 Pro 的 OMRG、PLK110 都出现过）。
@@ -1769,19 +1771,36 @@ function renderCpul(st) {
   const capInfo = (st.match(/^CAP_INFO=(.*)$/m) || [])[1] || "";
   // 每核显示「上限 / 硬件上限」：一眼看出有没有被压（上限=硬件上限即满频）
   // status 行形如： cpu7   1843200 /   864000 /  3187200
-  const core = k => {
-    const m = st.match(new RegExp("cpu" + k + "\\s+(\\d+)\\s*/\\s*(\\d+)\\s*/\\s*(\\d+)"));
-    return m ? { max: +m[1], hw: +m[3] } : null;
-  };
+  // status 里每个 policy 一行："  cpu0  1200000 / 800000 / 2000000"。
+  // 标签不再写死 cpu0/4/7：不同平台簇划分不同（天玑常有 0/4/7 之外的组合）。
+  const cores = [];
+  for (const line of st.split("\n")) {
+    const m = line.match(/^\s*cpu(\d+)\s+(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)\s*$/);
+    if (m) cores.push({ cpu: +m[1], max: +m[2], cur: +m[3], hw: +m[4] });
+  }
   const MHz = v => (v / 1000).toFixed(0);
-  const setCore = (id, k) => {
-    const o = core(k);
-    if (!o) { document.getElementById(id).textContent = "—"; document.getElementById(id).style.color = ""; return; }
-    document.getElementById(id).textContent = MHz(o.max) + " / " + MHz(o.hw) + "M";
-    // 被压（上限低于硬件上限）标黄，满频标绿
-    document.getElementById(id).style.color = o.max >= o.hw ? "var(--ok)" : "var(--warn)";
-  };
-  setCore("cpulC0", 0); setCore("cpulC4", 4); setCore("cpulC7", 7);
+  // 按本机实际簇数生成格子，不再写死 3 格。
+  // ★ 之前写死 3 格，只有 2 个 CPU 簇的机型（实测 PMS110/canoe：policy0=cpu0-5、policy6=cpu6-7）
+  //   第三格永远空着显示「—」，用户以为少了一簇/数据丢了。簇数由 status 输出决定。
+  const grid = document.getElementById("cpulGrid");
+  if (grid) {
+    // 先删掉旧的簇格子（保留温度那格）
+    grid.querySelectorAll("[data-cluster]").forEach(el => el.remove());
+    cores.forEach((o, i) => {
+      const d = document.createElement("div");
+      d.setAttribute("data-cluster", "1");
+      const k = document.createElement("div"); k.className = "k";
+      k.textContent = "簇" + (i + 1) + "·cpu" + o.cpu + " 上限/满频";
+      const v = document.createElement("div"); v.className = "v";
+      v.textContent = MHz(o.max) + " / " + MHz(o.hw) + "M";
+      // 被压（上限低于硬件上限）标黄，满频标绿
+      v.style.color = o.max >= o.hw ? "var(--ok)" : "var(--warn)";
+      d.appendChild(k); d.appendChild(v);
+      // 插到温度格之前，保持「簇…簇 温度」的顺序
+      const temp = document.getElementById("cpulTempReadK");
+      grid.insertBefore(d, temp ? temp.parentNode : null);
+    });
+  }
   // 当前保护温区读数：显示模块实际用的那个温区的名字与温度（可能不是机身）
   const zu = (st.match(/ZONE_USED=(\S+)/) || [])[1] || "";
   const zt = (st.match(/ZONE_T=(\S+)/) || [])[1] || "";
@@ -1818,18 +1837,25 @@ function renderCpul(st) {
   // 解锁了但实际频率没顶到上限 → 报"已解除，仍有别的限制"，而不是"已满频"。
   // 这是最容易被误解的状态（截图看着满频、数字只有一两成）。
   else if (unlocked && capped && shouldBeHot) { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "已解除，但被别的链路压着"; }
-  else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "已满频"; }
+  // 天玑是把"钉死"解开、让频率随负载走，不是把频率锁在最高档 ——
+  // 所以天玑上写「已满频」是错的（schedutil 下静置就该降频）。
+  else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = isMtk ? "已解除钉频" : "已满频"; }
   else { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = hint || "待命（条件未满足）"; }
   cpulSyncModeTab();
   updateCpulBtn();
   // 底部一行说明：原来直接贴 status 原文（8 个核心的原始数值），看不懂。改成人话。
   const gameOff = /disable_cpufreq_limit=1/.test(st);
+  // 出厂上限只在高通那份 status 里有（形如 "7:1843200 …"）。
+  // 天玑没有那个节点，用本机最大簇的"上限/满频"代替，别显示空。
   const bak = ((st.match(/出厂备份：(.*)/) || [])[1] || "").trim();
   const big = (bak.match(/7:(\d+)/) || [])[1];
+  const topCore = cores.length ? cores[cores.length - 1] : null;
+  const topTxt = big ? "出厂大核上限 " + (big / 1000000).toFixed(2) + " GHz"
+    : (topCore ? "最大簇 " + MHz(topCore.max) + " / " + MHz(topCore.hw) + " MHz" : "");
   document.getElementById("cpulInfo").textContent = [
     "前台游戏：" + (fgName && fgName !== "无" ? grecName(fgName) : "无"),
     "游戏场景限频：" + (gameOff ? "已解除" : "系统控制"),
-    big ? "出厂大核上限 " + (big / 1000000).toFixed(2) + " GHz" : "",
+    topTxt,
     // 被别的链路压着时，把这个事实摆在最显眼的一行里，避免"看着满频其实很低"。
     // 只在「本应满频」时才提示（理由同上面的 shouldBeHot）。
     // CAP_INFO 形如 "0:72% 3:82%"，冒号前是核心组的 policy 号，写明单位免得看不懂。

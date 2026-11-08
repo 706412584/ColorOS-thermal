@@ -26,6 +26,14 @@ CONF="$MODDIR/cpulimit.conf"
 FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
 # 老内核（如 4.14）上同一个节点在 /sys/module 下
 [ -e "$FREQ" ] || FREQ=/sys/module/msm_performance/parameters/cpu_max_freq
+# 平台：高通走 msm_performance 节点，天玑走 cpufreq policy（见文档开头 MTK 段）。
+# 以平台属性为准，不看节点在不在 —— 有些骁龙机的节点路径未知，误判成 MTK 会写错节点。
+PLATFORM=$(getprop ro.board.platform)
+SOC=$(getprop ro.soc.manufacturer)
+case "$PLATFORM$SOC" in
+  *mt*|*mediatek*|*MTK*) PLATFORM=mtk ;;
+  *) PLATFORM=qcom ;;
+esac
 GAMEPID=/proc/game_opt/game_pid
 TOP_PROCS=/dev/cpuset/top-app/cgroup.procs
 PIDFILE=/data/adb/oplus-cpulimit.pid
@@ -177,6 +185,166 @@ enable_game()  { printf '1' >"$GAMEDIS" 2>/dev/null; }
 disable_game() { printf '0' >"$GAMEDIS" 2>/dev/null; }
 game_opt_ok()  { local v=""; read -r v 2>/dev/null <"$GAMEDIS"; [ "$v" = "1" ]; }
 
+# ==== 天玑（联发科）分支 ====
+# 天玑没有 msm_performance 节点，出厂/厂商把频率钉在本机 policy 上：
+#   scaling_min_freq == scaling_max_freq == cur_freq，governor=powersave。
+#   从用户机上实测到的值看，它是**直接被钉死**的，不是温控收紧：
+#   实测 PLC110 三簇分别钉在 1200000 / 1000000 / 800000，都远低于 hw_max；
+#   游戏阈值（thermal 54°C）和 thermal_message.sconfig 都没动。
+# 本模块只做「可逆地解钉」：把 min/max 放开到硬件上限、governor 换回 schedutil，
+# 并备份原值；还原时写回原值。**不碰任何厂商温控/调度服务**（不 stop oplus_thermal、
+# 不动 fpsgo / gbe / core_ctl）—— 唯一的保护仍是本模块按温度收回。
+#
+# ★ 与高通的差别，以及为什么天玑的"下限"必须算清楚：
+#   天玑没有 msm_performance 那种集中式上限节点（也就没有 chmod 444 锁只读这一手），
+#   各 policy 的 min/max 就是全部战场。所以：
+#     ① 下限取该簇**最低可用频率**而不是硬件上限 —— 写 hw_max 等于"永远满频"，
+#        失去 DVFS，静置也烫；我们要的是「恢复正常调频范围」。
+#     ② governor 必须换掉 powersave（它会把频率死死压在 scaling_min_freq 上），
+#        且必须确认本机存在可用 governor（见 mtk_can_unpin），否则宁可不做。
+#     ③ 厂商若把 policy 写回去，下一个 tick 会再写一次（与高通路径同样处理）；
+#        差别是天玑没有只读锁，能不能长期压住取决于厂商服务的重写频率。
+
+# 优先使用的 governor（按此顺序挑本机可用的第一个）。
+# ★ 不选 powersave：它会把频率死死压在 scaling_min_freq 上，等于换个法子钉死。
+MTK_GOV_PREF="schedutil ondemand interactive conservative"
+
+# 本机能不能把天玑从 pinned 状态解开。
+# 判据：至少有一个 policy 的可用 governor 里存在 MTK_GOV_PREF 之一，且 hardware
+# 上限可读。**必须有可换的 governor** —— 否则把 min 放开后 powersave 仍会
+# 把频率压在最低档上，比原厂钉在 1200000 还慢，是负优化。
+mtk_pick_gov() { # $1 = policy 号；输出可用的首选 governor（无则空）
+  local avail g
+  avail=$(mtk_read "$1" scaling_available_governors)
+  [ -n "$avail" ] || return 1
+  for g in $MTK_GOV_PREF; do
+    case " $avail " in *" $g "*) printf '%s' "$g"; return 0 ;; esac
+  done
+  return 1
+}
+mtk_can_unpin() {
+  local k
+  for k in $(mtk_policies); do
+    mtk_pick_gov "$k" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+# 这个 policy 能不能安全解开。**没有可用 governor 的簇一律不碰**：
+# 实测有些内核给部分簇只留 powersave，那种情况下写大 max、放开 min 之后
+# powersave 会把频率钉在 min 上（比原厂更低），是负优化。
+mtk_manageable() { mtk_pick_gov "$1" >/dev/null 2>&1; }
+
+mtk_policies() { # 输出 policyN 列表（按编号）
+  local p
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -f "$p/scaling_max_freq" ] && printf '%s\n' "${p##*/policy}"
+  done
+}
+# 读某 policy 的某个值到 stdout
+mtk_read() { local v=""; read -r v 2>/dev/null <"/sys/devices/system/cpu/cpufreq/policy$1/$2"; printf '%s' "$v"; }
+
+# 备份：原采样存成 "$MTK_BAK" 的每行 "pN hw min max gov"
+MTK_BAK="$DATA/mtk_freq.orig"
+# 标记本模块此刻"已把天玑频率解开"。用它而不是"看起来已解开"来驱动还原，
+# 避免在本来就没被钉住的机型上每 5 秒无意义地重复写一遍同样的值。
+MTK_ON="$DATA/mtk.on"
+# "已被厂商改回"只提示一次，避免每拍刷日志
+MTK_REP="$DATA/mtk.repinned"
+mtk_backup() {
+  [ -s "$MTK_BAK" ] && return 0
+  local k hw mn mx gv out=""
+  for k in $(mtk_policies); do
+    hw=$(mtk_read "$k" cpuinfo_max_freq); mn=$(mtk_read "$k" scaling_min_freq)
+    mx=$(mtk_read "$k" scaling_max_freq); gv=$(mtk_read "$k" scaling_governor)
+    case "$hw" in ''|*[!0-9]*) continue ;; esac
+    out="$out$k $hw $mn $mx $gv
+"
+  done
+  [ -n "$out" ] || return 1
+  mkdir -p "$DATA" 2>/dev/null
+  printf '%s' "$out" >"$MTK_BAK" 2>/dev/null && log "已备份天玑原厂频率表 -> $MTK_BAK"
+}
+# 该 policy 当前是否已被本模块解开（上限顶到硬件上限、governor 已非 powersave）。
+# 不看下限：解开后下限是"最低可用频率"，本来就该远低于上限。
+mtk_unlocked_one() { # $1 = policy 号
+  local hw mx gv
+  hw=$(mtk_read "$1" cpuinfo_max_freq)
+  mx=$(mtk_read "$1" scaling_max_freq); gv=$(mtk_read "$1" scaling_governor)
+  case "$hw$mx" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$mx" = "$hw" ] || return 1
+  [ "$gv" != "powersave" ] || return 1
+  return 0
+}
+# 厂商/系统有没有把频率又改回钉死状态（用于"已解开过但被改回"的提示）。
+# 同样只看能管的簇：不管的簇本来就是钉死的，不能拿它当"被改回"。
+mtk_repinned() {
+  local k mx hw
+  for k in $(mtk_policies); do
+    mtk_manageable "$k" || continue
+    hw=$(mtk_read "$k" cpuinfo_max_freq); mx=$(mtk_read "$k" scaling_max_freq)
+    case "$hw$mx" in ''|*[!0-9]*) continue ;; esac
+    [ "$mx" -lt "$hw" ] 2>/dev/null && return 0
+  done
+  return 1
+}
+# 全机是否都已解开。只看**本模块能管**的簇（没有可用 governor 的簇不参与判定，
+# 否则它永远"未解开"，会让守护每次 tick 都重写一遍、也会让状态永远显示待命）。
+mtk_unlocked() {
+  local k ok=1 n=0
+  for k in $(mtk_policies); do
+    mtk_manageable "$k" || continue
+    n=$((n+1))
+    mtk_unlocked_one "$k" || { ok=0; break; }
+  done
+  [ "$n" -gt 0 ] && [ "$ok" = 1 ]
+}
+mtk_unlock() {
+  mtk_backup
+  local k hw lo freqs gv
+  for k in $(mtk_policies); do
+    mtk_manageable "$k" || continue
+    hw=$(mtk_read "$k" cpuinfo_max_freq)
+    case "$hw" in ''|*[!0-9]*) continue ;; esac
+    # ★ 下限不能也设成 hw_max：那等于"永远满频"，失去 DVFS，静置也烫。
+    #   要的是「解除钉死、恢复正常调频范围」：下限取该簇最低可用频率。
+    #   powersave governor 会强制跑在 scaling_min_freq 上，所以下限尤其重要。
+    lo=$hw
+    freqs=$(mtk_read "$k" scaling_available_frequencies)
+    if [ -n "$freqs" ]; then
+      lo=${freqs%% *}                       # 第一项即该簇最低可用频率
+      case "$lo" in ''|*[!0-9]*) lo=$hw ;; esac
+    fi
+    # 顺序：先把范围放宽（max 抬高、min 压低），再换 governor。
+    # 若先换 governor 再收 min，中间会出现 min>max 的非法区间被内核拒绝。
+    printf '%s' "$hw" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_max_freq" 2>/dev/null
+    printf '%s' "$lo" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_min_freq" 2>/dev/null
+    # 若内核没编译 schedutil，写会失败；退回 ondemand，再不行就保留原 governor。
+    gv=$(mtk_pick_gov "$k")
+    [ -n "$gv" ] && printf '%s' "$gv" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_governor" 2>/dev/null
+  done
+}
+mtk_restore() {
+  [ -s "$MTK_BAK" ] || return 0
+  local k hw mn mx gv
+  while IFS=' ' read -r k hw mn mx gv; do
+    [ -n "$k" ] || continue
+    [ -d "/sys/devices/system/cpu/cpufreq/policy$k" ] || continue
+    # 还原顺序：先换回 governor，再写 min，最后写 max（先把范围收窄再设 min 会失败）
+    [ -n "$gv" ] && printf '%s' "$gv" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_governor" 2>/dev/null
+    case "$mx" in ''|*[!0-9]*) ;; *) printf '%s' "$mx" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_max_freq" 2>/dev/null ;; esac
+    case "$mn" in ''|*[!0-9]*) ;; *) printf '%s' "$mn" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_min_freq" 2>/dev/null ;; esac
+  done <"$MTK_BAK"
+}
+
+# ---- 平台无关的「解锁 / 还原 / 是否已解锁」调度 ----
+do_unlock()  { case "$PLATFORM" in mtk) mtk_unlock ;; *) unlock_freq ;; esac; }
+do_restore() { case "$PLATFORM" in mtk) mtk_restore ;; *) restore_freq ;; esac; }
+# 本模块这层是否在位。高通看集中节点、天玑看各 policy。
+# 注意：这 != "实际已满频"，仍要给用户看 CAPPED。
+layer_on() {
+  case "$PLATFORM" in mtk) mtk_unlocked ;; *) is_unlocked && node_readonly ;; esac
+}
+
 # 只读锁是否在位（用权限位字符串判断，不依赖 -w —— root 下 -w 不可靠）
 node_readonly() {
   case "$(ls -l "$FREQ" 2>/dev/null)" in
@@ -300,26 +468,80 @@ is_skin_zone() {
   return 1
 }
 
+# 把配置里的 ZONE 归一化成「首选按名字查的温区名」，结果放 ZRESOLVE。
+#   auto / 空            → skin-msm-therm（WebUI「自动(推荐)」的语义）
+#   shell_front/back     → skin-msm-therm（旧版 WebUI 写的无效值；conf 注释里也写明
+#                          「不要用手动选 shell_*，实测形同虚设」。WebUI 只在界面上把它
+#                          迁成「自动」，conf 里的旧值会一直留着，所以这里必须一起兜住）
+#   其他（含具体温区名） → 原样返回，交给 find_zone 按名字查
+# gamerec.sh 用同一套规则（见那边的同名函数），两边才能保证选到同一个温区。
+ZRESOLVE=""
+zone_normalize() {
+  case "$1" in
+    ''|auto|shell_front|shell_back|shell_frame) ZRESOLVE=skin-msm-therm ;;
+    *) ZRESOLVE=$1 ;;
+  esac
+}
+
+# 在候选族里挑「读数最高」的温区。$1 = 判定函数名（is_cpu_zone / is_skin_zone）。
+# 结果放 PZ_NUM / PZ_NAME / PZ_VAL；没有可用候选时返回 1。
+#
+# ★ 为什么不是「第一个命中的」—— 天玑 PLC110 实测（2026-11-07 诊断报告，内核 5.10.236）：
+#   cpu 族共 14 个候选，soc_max 编号最小(z0)排第一，被"第一个"选中；
+#   但它与 cpu_little1-4 / cpu_big1-6 / cpu_bigbig1-2 一起**13 个全部读 34000 恒定**
+#   （驱动实例在、但没接数据），而真正有效的 soc_top(z19)=52597 永远轮不到。
+#   后果：阈值 TEMP_CPU=80°C 面对 34°C 读数，要涨 46°C 才触发 → 保护形同虚设。
+#   死值一律偏低（34k/33k/31k），真实结温 46~54k，所以「取最高」是稳的方向。
+#
+# ★ 为什么不用「短窗口采样看谁在动」：热质量大，正确温区短窗口也读不出变化。
+#   实测 PJA110 上 skin-msm-therm（公认正确，游戏时确实涨到 55°C）
+#   在 0.6 秒内三次读数完全一致 → 采样法会把它误判成死值。这条路已被实测否决。
+pick_zone_hottest() {
+  PZ_NUM=""; PZ_NAME=""; PZ_VAL=""
+  local z zt2 tv best=""
+  for z in /sys/class/thermal/thermal_zone*; do
+    zt2=""; read -r zt2 2>/dev/null <"$z/type"
+    [ -n "$zt2" ] || continue
+    "$1" "$zt2" || continue
+    tv=""; read -r tv 2>/dev/null <"$z/temp"
+    case "$tv" in ''|*[!0-9-]*) continue ;; esac
+    # 剔除「不是温度」的读数：<=0 是未接传感器（本机大量 -273000 / 0）或电池电流类；
+    # >150000 是门限值不是温度（同 cpu-hw-trip 那个坑）。
+    [ "$tv" -le 0 ] && continue
+    [ "$tv" -gt 150000 ] && continue
+    if [ -z "$best" ] || [ "$tv" -gt "$best" ]; then
+      best=$tv; PZ_NUM=${z##*thermal_zone}; PZ_NAME=$zt2; PZ_VAL=$tv
+    fi
+  done
+  [ -n "$PZ_NUM" ]
+}
+
 ZONE_NAME_C=""; ZONE_NUM_C=""; ZONE_USED=""; ZONE_T=""; T_NOW=""
 read_temp() {
-  local zt="" z zt2
+  local zt="" z zt2 zp
   [ -n "$ZONE_NUM_C" ] && read -r zt 2>/dev/null <"/sys/class/thermal/thermal_zone$ZONE_NUM_C/type"
   if [ "$ZONE_NAME_C" != "$ZONE" ] || [ "$zt" != "$ZONE_USED" ]; then
     ZONE_NAME_C=$ZONE; ZONE_USED=""; ZONE_NUM_C=""
-    # ① 用户配置的温区（按名字精确找）
-    ZONE_NUM_C=$(find_zone "$ZONE")
-    [ -n "$ZONE_NUM_C" ] && ZONE_USED=$ZONE
-    # ② 没有就扫全表：CPU 结温家族优先，其次机身/外壳家族
+    # ① 用户配置的温区（按名字精确找），旧值/自动先归一化。
+    #    注意只改本地变量 zp，不动 ZONE 本身 —— 状态里仍显示原值（如 ZONE=auto），
+    #    否则 WebUI 读回会把「自动」标签误显示成「指定机身」。
+    zone_normalize "$ZONE"; zp=$ZRESOLVE
+    ZONE_NUM_C=$(find_zone "$zp")
+    # 配置的温区本机没有 → 按「自动」处理（再试 skin-msm-therm）。
+    # 少了这一步，配一个不存在的名字时这里会直接落到 ②（CPU 族优先），
+    # 而 gamerec 固定 skin-msm-therm 优先 → 两边岔开。
+    if [ -z "$ZONE_NUM_C" ] && [ "$zp" != skin-msm-therm ]; then
+      zp=skin-msm-therm
+      ZONE_NUM_C=$(find_zone "$zp")
+    fi
+    [ -n "$ZONE_NUM_C" ] && ZONE_USED=$zp
+    # ② 扫全表替补：CPU 结温家族优先（取最高读数），其次机身/外壳家族。
+    #    顺序必须与 gamerec.sh 的 pick_zone 完全一致。
     if [ -z "$ZONE_NUM_C" ]; then
-      for z in /sys/class/thermal/thermal_zone*; do
-        zt2=""; read -r zt2 2>/dev/null <"$z/type"
-        is_cpu_zone "$zt2" && { ZONE_NUM_C=${z##*thermal_zone}; ZONE_USED=$zt2; break; }
-      done
-      if [ -z "$ZONE_NUM_C" ]; then
-        for z in /sys/class/thermal/thermal_zone*; do
-          zt2=""; read -r zt2 2>/dev/null <"$z/type"
-          is_skin_zone "$zt2" && { ZONE_NUM_C=${z##*thermal_zone}; ZONE_USED=$zt2; break; }
-        done
+      if pick_zone_hottest is_cpu_zone; then
+        ZONE_NUM_C=$PZ_NUM; ZONE_USED=$PZ_NAME
+      elif pick_zone_hottest is_skin_zone; then
+        ZONE_NUM_C=$PZ_NUM; ZONE_USED=$PZ_NAME
       fi
     fi
     zone_class "$ZONE_USED"
@@ -332,6 +554,25 @@ read_temp() {
 # 温区属于哪一级 → 该用哪个阈值。结果放 ZONE_T（skin / cpu）。
 zone_class() {
   if is_cpu_zone "$1"; then ZONE_T=cpu; else ZONE_T=skin; fi
+}
+
+# 给诊断/status 用：列出候选温区及读数，并标出实际选中的那个。
+# 形如 "选中=z19:soc_top=52597 | 候选 z0:soc_max=34000 z19:soc_top=52597 ..."
+zone_pick_note() {
+  local z zt2 tv out="" n
+  for z in /sys/class/thermal/thermal_zone*; do
+    zt2=""; read -r zt2 2>/dev/null <"$z/type"
+    [ -n "$zt2" ] || continue
+    is_cpu_zone "$zt2" || is_skin_zone "$zt2" || continue
+    tv=""; read -r tv 2>/dev/null <"$z/temp"
+    n=${z##*thermal_zone}
+    if [ "$n" = "$ZONE_NUM_C" ]; then
+      printf '%s[选中 z%s:%s=%s]' "$out" "$n" "$zt2" "$tv"
+    else
+      printf '%s z%s:%s=%s' "$out" "$n" "$zt2" "$tv"
+    fi
+    out=" |"
+  done
 }
 
 # 当前生效的基础阈值放进 EFF_BASE：CPU 结温温区用 TEMP_CPU，其余用 TEMP。
@@ -551,7 +792,12 @@ why_state() {
   # 本模块这层是否在位（节点=解锁值），以及实际频率有没有真的顶到硬件上限。
   # 两者要分开说：节点在位 ≠ 实际满频。实测 Ace 2 Pro(OMRG) 与 PLK110 上都出现过
   # 「节点已是 9999999，但 scaling_max_freq 被压到 19%」，只报"已满频"就是骗用户。
-  local unl="否"; is_unlocked && unl="是"
+  # 天玑没有集中节点，layer_on 会逐 policy 判断；高通仍看节点+只读锁。
+  local unl="否"; layer_on && unl="是"
+  # 天玑特有的第三种情况：本模块写过（有 mtk.on 标记），但厂商服务又把上限改回去了。
+  # 这时既不是"未解开"也不是"被别的链路压"，要单独说，否则用户以为模块没生效。
+  local mtk_lost=0
+  if [ "$PLATFORM" = mtk ] && [ -f "$MTK_ON" ] && mtk_repinned; then mtk_lost=1; fi
   # 复用 status 已经采过的那份（CAP_FREQ 非空即为已采样），避免一次 status 采两遍、
   # 两次结果还可能不一样（别的链路在翻转），导致同屏数据自相矛盾。
   [ -n "$CAP_FREQ" ] || { sample_caps; compute_capped; }
@@ -577,6 +823,9 @@ why_state() {
   # 只有「本应满频」时，才把实际情况（含被别的链路压着）报出来。
   # 文案里的数字要和 status 的 CAP_FREQ 一致（同一个 $cap，来自同一次采样）。
   if [ "$want" = 1 ]; then
+    if [ "$mtk_lost" = 1 ]; then
+      echo "厂商服务把频率改回了原厂值（$cap），守护会继续解除"; return
+    fi
     if [ "$unl" = 是 ] && [ "$full" = 否 ]; then
       echo "本层已解除，但实际频率仍被压（$cap）· 另有链路在限制，不是本模块能解的"; return
     fi
@@ -596,7 +845,12 @@ why_state() {
         [ "$full" = 是 ] && echo "前台 $cur 已勾选，已满频" || echo "前台 $cur 已勾选，但实际频率被压（$cap）"
       else echo "待命 · 前台 $cur 不在已选列表"; fi ;;
     *)
-      [ "$full" = 是 ] && echo "全局模式，已满频" || echo "全局模式，但实际频率被压（$cap）" ;;
+      if [ "$PLATFORM" = mtk ]; then
+        # 天玑：解开的是"钉死"，不是"锁最高频"，所以满/不满取决于负载，不能报"已满频"。
+        [ "$full" = 是 ] && echo "全局模式，钉频已解除" || echo "全局模式，钉频已解除（当前负载下频率在 $cap 一带）"
+      else
+        [ "$full" = 是 ] && echo "全局模式，已满频" || echo "全局模式，但实际频率被压（$cap）"
+      fi ;;
   esac
 }
 
@@ -607,19 +861,54 @@ tick() {
   read_temp
   local t=$T_NOW
   if should_unlock; then
-    # 先判断值（内建 read，几乎零开销），值对了再查只读锁（ls fork 一次）
-    if ! is_unlocked || ! node_readonly; then
-      ensure_backup
-      unlock_freq
-      log "解锁（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
-    fi
-    # 游戏场景的第二层上限：确保也被禁用（系统会反复重置，需每次补写）
+    case "$PLATFORM" in
+      mtk)
+        # 天玑：只在确需重写时写一次（写后每拍只做读校验，不反复抢写）。
+        # 厂商若又把它写回去，这里会自然再写一次 —— 但只在"没解开"时，
+        # 不会变成每 5 秒无脑写。
+        if ! mtk_unlocked; then
+          was_on=0; [ -f "$MTK_ON" ] && was_on=1
+          mtk_unlock
+          : >"$MTK_ON" 2>/dev/null
+          if [ "$was_on" = 0 ]; then
+            log "解锁（天玑 · ${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
+            rm -f "$MTK_REP"
+          elif [ ! -f "$MTK_REP" ]; then
+            # 厂商把 policy 写回了。标记一下，之后不再每拍记日志，否则日志会被刷爆。
+            log "天玑频率被厂商改回，已再次解除（反复出现说明本机厂商服务会重写，属正常）"
+            : >"$MTK_REP" 2>/dev/null
+          fi
+        fi
+        ;;
+      *)
+        # 先判断值（内建 read，几乎零开销），值对了再查只读锁（ls fork 一次）
+        if ! is_unlocked || ! node_readonly; then
+          ensure_backup
+          unlock_freq
+          log "解锁（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
+        fi
+        ;;
+    esac
+    # 游戏场景的第二层上限：两层平台同名同义（游戏场景专用上限开关），
+    # 确保也被禁用（系统会反复重置，需每次补写）。
     game_opt_ok || { enable_game; log "禁用游戏上限（game_pid=$(game_pid_val)）"; }
   else
-    if is_unlocked; then
-      restore_freq
-      log "收回（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE 前台游戏=${GAME_FG:-无}）"
-    fi
+    case "$PLATFORM" in
+      mtk)
+        # 天玑还原：本模块备份存在（写过）才动它，没写过就不碰，避免误改别人的设置
+        if [ -f "$MTK_ON" ]; then
+          mtk_restore
+          rm -f "$MTK_ON" "$MTK_REP"
+          log "收回（天玑 · ${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE 前台游戏=${GAME_FG:-无}）"
+        fi
+        ;;
+      *)
+        if is_unlocked; then
+          restore_freq
+          log "收回（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE 前台游戏=${GAME_FG:-无}）"
+        fi
+        ;;
+    esac
     game_opt_ok && { disable_game; log "恢复游戏上限"; }
   fi
 }
@@ -698,19 +987,36 @@ cmd_status() {
   else
     [ -f "$PIDFILE" ] && echo "状态：异常（残留 pidfile，守护已死）" || echo "状态：未运行"
   fi
+  # 机器可读的两行（WebUI 用；不要删或改格式）。
+  # PLATFORM：mtk / qcom。LAYER_ON：本模块这一层现在是否在位
+  #（高通 = 节点是解锁值且只读锁在；天玑 = 各 policy 上限已放开、governor 已换）。
+  # WebUI 以前用「当前上限里有没有 9999999」猜，天玑没有这个节点，猜不出来。
+  echo "PLATFORM=$PLATFORM"
   echo "配置：ENABLE=$ENABLE TEMP=${TEMP}/TEMP_CPU=${TEMP_CPU} ZONE=$ZONE MODE=$MODE HYST=$HYST"
   # 先采样，后面的"当前上限/capped 判定"都用这一份数据，避免同一份报告里自相矛盾
   sample_caps; compute_capped
-  echo "当前上限：$(cat "$FREQ" 2>/dev/null)"
+  local lo=0; layer_on && lo=1
+  echo "LAYER_ON=$lo"
+  case "$PLATFORM" in
+    mtk) echo "本层状态：$([ -f "$MTK_ON" ] && echo 已解开 || echo 未解开)（天玑：放开各 policy 的 min/max 与 governor）"
+         echo "原厂备份：$([ -s "$MTK_BAK" ] && echo "有（$MTK_BAK）" || echo 无)" ;;
+    *)   echo "当前上限：$(cat "$FREQ" 2>/dev/null)"
+         echo "出厂备份：$(orig_value)" ;;
+  esac
   echo "游戏上限：$(cat /proc/game_opt/cpu_max_freq 2>/dev/null || echo '—')  [disable_cpufreq_limit=$(cat "$GAMEDIS" 2>/dev/null)]"
-  echo "出厂备份：$(orig_value)"
   echo
   echo "当前频率（上限 / 实际 / 硬件上限）："
-  for c in 0 4 7; do
+  # 按实际存在的 policy 列出（取每个 policy 的第一个 CPU 做标签），
+  # 不再写死 0/4/7 —— 天玑/新平台的簇划分不一定相同（如纯 4+4 就没有 cpu7）。
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    c=""; read -r c 2>/dev/null <"$p/related_cpus"
+    c=${c%% *}
+    [ -n "$c" ] || c=${p##*/policy}
     printf '  cpu%-2s %8s / %8s / %8s\n' "$c" \
-      "$(cat /sys/devices/system/cpu/cpu$c/cpufreq/scaling_max_freq 2>/dev/null)" \
-      "$(cat /sys/devices/system/cpu/cpu$c/cpufreq/scaling_cur_freq 2>/dev/null)" \
-      "$(cat /sys/devices/system/cpu/cpu$c/cpufreq/cpuinfo_max_freq 2>/dev/null)"
+      "$(cat "$p/scaling_max_freq" 2>/dev/null)" \
+      "$(cat "$p/scaling_cur_freq" 2>/dev/null)" \
+      "$(cat "$p/cpuinfo_max_freq" 2>/dev/null)"
   done
   echo
   # ★ 实际有没有被压（本函数开头已 sample_caps + compute_capped）：
@@ -727,6 +1033,9 @@ cmd_status() {
   # 实际用于保护的温区（配置的温区本机没有时会换成替补），及该温区用哪个阈值
   echo "ZONE_USED=${ZONE_USED:-无}"
   echo "ZONE_T=${ZONE_T:-none}"
+  # 候选温区现场：替补是"取读数最高"选出来的，把全部候选列出来便于核对选得对不对
+  # （天玑上 cpu 族有 13 个 34000 死值，只看 ZONE_USED 看不出为什么选了这个）
+  echo "ZONE_PICK=$(zone_pick_note)"
   eff_base; echo "EFF_TEMP=$EFF_BASE"
   echo "SKIN_TEMP=$T_NOW"
   echo "SHELL_TEMP=$(zone_temp shell_front)"
@@ -757,11 +1066,14 @@ cmd_start() {
 cmd_stop() {
   set_enable 0
   stop_daemon
-  restore_freq
+  do_restore
+  rm -f "$MTK_ON" "$HOT_FLAG"
   disable_game
-  rm -f "$HOT_FLAG"
   log "已停止并还原出厂上限（含游戏上限），已写 ENABLE=0"
-  echo "已停止，出厂上限已还原：$(cat "$FREQ" 2>/dev/null)"
+  case "$PLATFORM" in
+    mtk) echo "已停止，天玑频率已还原为原厂 policy 设置" ;;
+    *)   echo "已停止，出厂上限已还原：$(cat "$FREQ" 2>/dev/null)" ;;
+  esac
 }
 
 cmd_apply() {
@@ -780,8 +1092,8 @@ cmd_apply() {
 cmd_ensure() {
   load_conf
   if [ "$ENABLE" != "1" ]; then
-    if is_alive || is_unlocked; then
-      stop_daemon; restore_freq; disable_game; rm -f "$HOT_FLAG"
+    if is_alive || [ -f "$MTK_ON" ] || is_unlocked; then
+      stop_daemon; do_restore; rm -f "$MTK_ON" "$HOT_FLAG"; disable_game
       log "ensure：配置已关闭，还原并停止"
     fi
     return 0
@@ -792,18 +1104,32 @@ cmd_ensure() {
   sleep 1
 }
 
-# 本机没有高通 msm_performance 节点（联发科/天玑等）→ 温控性能不适用。
-# 守护、开启、热重载都不执行，避免空转；status 如实报告，WebUI 据此提示。
-if [ ! -e "$FREQ" ]; then
+# 平台适配门槛：
+#   高通 —— 必须有 msm_performance 节点，否则无从下手，如实报「本机不支持」。
+#   天玑 —— 必须有 cpufreq policy，否则同样不支持（极少见的阉割内核）。
+# 两者都没有的机型不再空转：不开守护、不改频率；status 报 UNSUPPORTED，WebUI 据此提示。
+UNSUPPORTED=
+case "$PLATFORM" in
+  mtk) if [ -z "$(mtk_policies)" ]; then
+         UNSUPPORTED="本机没有可调的 CPU 频率策略（cpufreq policy），温控性能不可用"
+       elif ! mtk_can_unpin; then
+         # 没有可用的调频 governor：放开 min 后 powersave 会把频率压在最低档，
+         # 比原厂钉在 1200000 还慢。宁可不做，也不做负优化。
+         UNSUPPORTED="本机内核没有可用的调频策略（governor 仅 powersave），解除钉频会变成固定最低频，故不支持"
+       fi ;;
+  *)   [ -e "$FREQ" ] || UNSUPPORTED="本机没有高通 msm_performance 限频节点，温控性能不可用" ;;
+esac
+if [ -n "$UNSUPPORTED" ]; then
   case "$1" in
     status)
       echo "=== CPU 上限解除 ==="
+      echo "平台：$PLATFORM"
       echo "状态：本机不支持"
       echo "UNSUPPORTED=1"
-      echo "STATE_HINT=本机没有高通 msm_performance 限频节点（联发科/天玑机型没有），温控性能不可用"
+      echo "STATE_HINT=$UNSUPPORTED"
       exit 0 ;;
     stop|ensure) exit 0 ;;
-    *) echo "本机不支持温控性能：没有 $FREQ（联发科/天玑机型没有这个节点）"; exit 1 ;;
+    *) echo "本机不支持温控性能：$UNSUPPORTED"; exit 1 ;;
   esac
 fi
 
@@ -814,7 +1140,12 @@ case "$1" in
   stop)  cmd_stop ;;
   status) load_conf; cmd_status ;;
   apply) cmd_apply ;;
-  tick)  load_conf; tick; echo "tick done: $(cat "$FREQ")" ;;
+  tick)  load_conf; tick
+         # 天玑没有 msm_performance 节点，回读那个路径会报错，按平台给不同的确认信息
+         case "$PLATFORM" in
+           mtk) k=0; for k in $(mtk_policies); do printf 'p%s=%s/%s ' "$k" "$(mtk_read "$k" scaling_max_freq)" "$(mtk_read "$k" scaling_governor)"; done; echo ;;
+           *)   echo "tick done: $(cat "$FREQ" 2>/dev/null)" ;;
+         esac ;;
   buildgames) build_game_list; echo "游戏名单 $(grep -c '' "$GAME_LIST_CACHE" 2>/dev/null) 个" ;;
   why)   load_conf; why_state ;;
   *) echo "用法：cpulimit.sh {start|stop|status|apply|tick}"; exit 1 ;;

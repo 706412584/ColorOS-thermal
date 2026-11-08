@@ -41,6 +41,21 @@ for r in 1 2 3; do
   kill -9 $pids 2>/dev/null
   sleep 0.3
 done
+# 兜底：天玑机型没有集中节点，按备份的天玑频率表逐 policy 还原（stop 已做过一次，
+# 这里是"stop 没生效"时的保险）。备份不存在说明本模块从没解开过它，不动。
+MTK_BAK=/data/adb/oplus-cloud-block-data/mtk_freq.orig
+MTK_ON=/data/adb/oplus-cloud-block-data/mtk.on
+if [ -s "$MTK_BAK" ] && [ -f "$MTK_ON" ]; then
+  while IFS=' ' read -r k hw mn mx gv; do
+    [ -n "$k" ] || continue
+    [ -d "/sys/devices/system/cpu/cpufreq/policy$k" ] || continue
+    [ -n "$gv" ] && printf '%s' "$gv" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_governor" 2>/dev/null
+    case "$mx" in ''|*[!0-9]*) ;; *) printf '%s' "$mx" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_max_freq" 2>/dev/null ;; esac
+    case "$mn" in ''|*[!0-9]*) ;; *) printf '%s' "$mn" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_min_freq" 2>/dev/null ;; esac
+  done <"$MTK_BAK"
+  rm -f "$MTK_ON"
+fi
+
 # 兜底：只有节点仍是解锁值（说明 stop 没生效）才复位。
 # 优先写本机首次开启时备份的原值；没有有效备份才用 Ace 2 Pro 实测的出厂值
 # —— 不能无条件写死值，别的机型的出厂档位不一样。

@@ -12,9 +12,11 @@
 # 后台的时间不采样、不计入。前台累计不足 MIN_DUR 秒的不记录（误点打开）。
 #
 # 采样（每秒一次，只在游戏前台时）：
-#   帧率   优先 SurfaceFlinger 合成帧计数（service call SurfaceFlinger 1013）的差值 / 时间差；
-#          该接口不可用（ColorOS 16）时读高通显示驱动的 sde-crtc measured_fps；
-#          两个都没有（部分天玑）时记录帧率为空，其余项照常
+#   帧率   三条路，开局探测一次，按 sf → drm → lat 顺序取第一个可用的：
+#          sf  = service call SurfaceFlinger 1013 合成帧计数（黑鲨等；Android 16 已移除）
+#          drm = /sys/class/drm/sde-crtc-*/measured_fps（高通显示驱动专属）
+#          lat = dumpsys SurfaceFlinger --latency <层>（AOSP 组件，天玑也能用）
+#          三条都没有时记录帧率为空，其余项照常
 #   CPU    最后一个 cpufreq policy（超大核）与倒数第二个（中核）的 scaling_cur_freq
 #   GPU    高通 /sys/class/kgsl/kgsl-3d0/gpuclk；
 #          天玑 /sys/kernel/ged/hal/current_freqency（"loading kHz" 取第二列）
@@ -108,14 +110,59 @@ sf_frames() {
 #   sf  = SurfaceFlinger 1013 计数器（黑鲨等可用；ColorOS 16 / Android 16 上已移除，返回 Error）
 #   drm = /sys/class/drm/sde-crtc-*/measured_fps（高通显示驱动，内容形如
 #         "fps: 90.4 duration:500000 frame_count:46"，是最近一个统计窗口的屏幕刷新帧率）
+#   lat = dumpsys SurfaceFlinger --latency <层名>（★ AOSP 组件，不依赖厂商：
+#         高通机型在 Android 16 上 sf 与 drm 都不可用、天玑机型两者都没有时，靠它兜底）
 #   none = 都没有，只记 CPU/GPU/温度
+#
+# ★ lat 的原理与取法（2026-11-07 在 Ace 2 Pro / Android 16 实测）：
+#   输出形如（第1行=刷新周期 ns，之后每行 = desiredPresent | actualPresent | frameReady）：
+#     11111111
+#     60001805677787 60001826828723 60001805892214
+#     ...
+#   一次性给出最近约 5 秒 / 127 帧的滚动窗口，**表尾就是最新一帧**。
+#   每拍只取「表尾往前 WINDOW 秒」内的帧算平均 —— 等价于"这一秒交付了多少帧"。
+#   不要用整窗平均：那是 5 秒滑动平均，会把 1 秒内的卡顿抹平（对 1% Low 统计是致命的）。
+#
+# ⚠️ 三个实测踩过的坑：
+#   1. 时间戳是纳秒、量级 6e13，**超出 mksh 32 位**，在 shell 里做减法会溢出
+#      （实测算出 205 FPS，超过刷新率才暴露）。这里全程交给 awk 算。
+#   2. --latency 的时间戳**不是 /proc/uptime 那个时钟**（实测差 27972 秒），
+#      不能用 uptime 定窗，只能用表尾锚定。
+#   3. 层名要匹配「<包名>/<Activity>#N」那种（不含 InputSink / ActivityRecord{ 前缀），
+#      拿 handle（纯十六进制短串）去查只会得到一行刷新率。
 pick_fps_src() {
   sf_frames
   if [ -n "$SF" ]; then FPS_SRC=sf; return; fi
   DRM_FILES=""
   local f
   for f in /sys/class/drm/sde-crtc-*/measured_fps; do [ -r "$f" ] && DRM_FILES="$DRM_FILES $f"; done
-  [ -n "$DRM_FILES" ] && FPS_SRC=drm || FPS_SRC=none
+  [ -n "$DRM_FILES" ] && { FPS_SRC=drm; return; }
+  # 兜底：AOSP 的 --latency。
+  # ⚠️ 不能只看「dumpsys 命令在不在」就当可用 —— Android 上它总在，那会把本机
+  #    真正可用的 sf/drm 顶掉。必须实测一次：能取到刷新周期行才算可用。
+  if dumpsys SurfaceFlinger --latency 2>/dev/null | head -1 | grep -qE '^[0-9]+$'; then
+    FPS_SRC=lat; LAT_LAYER=""; return
+  fi
+  FPS_SRC=none
+}
+
+# 找 --latency 要用的层名（$1 = 包名）。结果放 LAT_LAYER，找不到为空。
+# 层列表两种形态（2026-11-07 实测 Ace 2 Pro）：
+#   RequestedLayerState{759b89b com.pkg/com.pkg.Act#20385 parentId=..}   ← 带 handle 前缀
+#   RequestedLayerState{com.pkg/com.pkg.Act#21018 parentId=20385}        ← ★ 要这个
+# 判据：`{` 紧跟包名。带 handle 的那种 `{` 后是十六进制串/ActivityRecord/ActivityRecordInputSink，
+# 用 "{$1/" 精确匹配即可天然排除，不需要额外的黑名单。
+lat_find_layer() {
+  LAT_LAYER=""
+  [ -n "$1" ] || return
+  # 取 `{` 与第一个空格之间的那一段（= 层名本身）。
+  # ⚠️ 不能只做 s/}.*// 就完事：实测 `{pkg/Act#N parentId=21051}` 里
+  #    `}` 之后的内容会漏进来（列表里最后一段没有空格分隔），
+  #    结果把 " parentId=21051]" 也当成层名一部分，--latency 就拿不到数据。
+  LAT_LAYER=$(dumpsys SurfaceFlinger --list 2>/dev/null \
+              | grep -F "{$1/" | head -1 \
+              | sed 's/.*{//' | awk '{print $1}')
+  case "$LAT_LAYER" in "$1"/*'#'*) ;; *) LAT_LAYER="" ;; esac
 }
 
 # 本拍帧率 ×10 放进 F10（取不到为空）。$1 = 距上一拍的厘秒数
@@ -155,11 +202,31 @@ fps_tick() {
         [ "$v" -gt "$best" ] && best=$v
       done
       [ "$best" -ge 0 ] && F10=$best ;;
+    lat)
+      # 取「表尾往前 LATWIN 秒」内的帧算平均（= 这一秒交付了多少帧）。
+      # 全程 awk：时间戳是纳秒、量级 6e13，mksh 32 位算会溢出（实测算出 205 FPS）。
+      [ -n "$LAT_LAYER" ] || return
+      F10=$(dumpsys SurfaceFlinger --latency "$LAT_LAYER" 2>/dev/null | awk -v w="$LATWIN" '
+        NR>1 { v=$2+0; if (v>0 && v<9e18) a[n++]=v }
+        END {
+          if (n<2) exit
+          last=a[n-1]; lo=last-w*1e9
+          c=0; first=0
+          for (i=0;i<n;i++) if (a[i]>=lo) { if(!first) first=a[i]; c++ }
+          if (c<2) exit
+          span=(last-first)/1e9
+          if (span>0) printf "%d", (c-1)/span*10    # ×10，与 F10 口径一致
+        }')
+      case "$F10" in ''|*[!0-9]*) F10="" ;; esac ;;
   esac
 }
 
 # 低于该值（×10）视为画面静止（加载/结算/暂停时屏幕不出新帧），不计入帧率统计
 IDLE_F10=50
+
+# lat 来源的取帧窗口（秒）。--latency 给的是约 5 秒的滚动窗口，
+# 只取尾部这么长一段 —— 等于"这一拍交付了多少帧"，不会被前几秒的历史抹平卡顿。
+LATWIN=1.0
 
 # /proc/uptime 转厘秒
 uptime_cs() {
@@ -195,20 +262,74 @@ is_skin_zone() {
   return 1
 }
 
-# 保护温区（开局查一次）。三级：skin-msm-therm > CPU 结温家族 > 外壳家族。
-# 与 cpulimit.sh 同序，这样"游戏记录里的最高温"和"触发收回的温度"是同一个温区。
+# 在候选族里挑「读数最高」的温区。$1 = 判定函数名。结果放 PZ_PATH；无可用候选取空。
+# 必须与 cpulimit.sh 的 pick_zone_hottest 同规则：cpu 族里有一批**恒定不动的死值**
+# （天玑 PLC110 实测 13 个都读 34000），按「第一个命中」会选中死值，读数永远偏低。
+# 死值一律偏低、真实结温明显更高，所以「取最高」是稳的方向。
+pick_zone_hottest() {
+  PZ_PATH=""
+  local z zt tv best=""
+  for z in /sys/class/thermal/thermal_zone*; do
+    zt=""; read -r zt 2>/dev/null <"$z/type"
+    [ -n "$zt" ] || continue
+    "$1" "$zt" || continue
+    tv=""; read -r tv 2>/dev/null <"$z/temp"
+    case "$tv" in ''|*[!0-9-]*) continue ;; esac
+    # 剔除不是温度的读数：<=0 是未接传感器，>150000 是门限值（同 cpu-hw-trip 那个坑）
+    [ "$tv" -le 0 ] && continue
+    [ "$tv" -gt 150000 ] && continue
+    [ -z "$best" ] || [ "$tv" -gt "$best" ] && { best=$tv; PZ_PATH=$z/temp; }
+  done
+  [ -n "$PZ_PATH" ]
+}
+
+# 把配置里的 ZONE 归一化成「首选按名字查的温区名」，结果放 ZRESOLVE。
+# 与 cpulimit.sh 的 zone_normalize **逐字一致**（两处必须同步改）。
+#   auto / 空 / 旧值 shell_* → skin-msm-therm；其他原样。
+ZRESOLVE=""
+zone_normalize() {
+  case "$1" in
+    ''|auto|shell_front|shell_back|shell_frame) ZRESOLVE=skin-msm-therm ;;
+    *) ZRESOLVE=$1 ;;
+  esac
+}
+
+# 从 cpulimit.conf 读 ZONE（只取 ZONE= 那一行，去掉注释/空白/CR）。
+# 为什么游戏记录要读它：温控性能按用户配置的温区收回上限，游戏记录必须记**同一个**温区，
+# 否则"记录里的最高温"和"触发收回的温度"不是一回事。以前这里固定 skin-msm-therm，
+# 只要 conf 里配了别的（或旧值 shell_front）两边就岔开。
+ZONE_CONF="$MODDIR/cpulimit.conf"
+conf_zone() {
+  local raw line key v=""
+  [ -f "$ZONE_CONF" ] || { ZRESOLVE=skin-msm-therm; return; }
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line=${raw%%#*}
+    # 键也要去空白 —— cpulimit.sh 的 load_conf 用 trim 处理键（`ZONE =x`、` ZONE=x` 都认），
+    # 这里只做 `case ZONE=*` 会漏掉带空格的写法，导致两边读到的 ZONE 不同而岔开。
+    key=$(printf '%s' "${line%%=*}" | tr -d ' \t\r')
+    [ "$key" = ZONE ] && v=${line#*=}
+  done <"$ZONE_CONF"
+  # 值也要去首尾空白与 CR（toybox 的 tr 可用）
+  v=$(printf '%s' "$v" | tr -d ' \t\r')
+  zone_normalize "$v"
+}
+
+# 保护温区（开局查一次）。顺序与 cpulimit.sh 的 read_temp 完全一致：
+#   ① 配置里的温区（归一化后按名字查）；本机没有则按「自动」再试 skin-msm-therm
+#   ② 都没有 → CPU 结温家族（取读数最高）→ ③ 机身/外壳家族（取读数最高）
+# 这样"游戏记录里的最高温"和"触发收回的温度"保证是同一个温区。
+# ★ 曾经这里固定 skin-msm-therm 且不读 conf；cpulimit 读 conf 且族内取「第一个命中」→
+#   两者会选到不同温区（实测 cpulimit=cpu-0-4-0、gamerec=cpullc-0-0）。
 pick_zone() {
-  TZ_PATH=$(find_zone skin-msm-therm)
+  conf_zone; local zp=$ZRESOLVE
+  TZ_PATH=$(find_zone "$zp")
   [ -n "$TZ_PATH" ] && return
-  local z zt
-  for z in /sys/class/thermal/thermal_zone*; do
-    zt=""; read -r zt 2>/dev/null <"$z/type"
-    is_cpu_zone "$zt" && { TZ_PATH=$z/temp; return; }
-  done
-  for z in /sys/class/thermal/thermal_zone*; do
-    zt=""; read -r zt 2>/dev/null <"$z/type"
-    is_skin_zone "$zt" && { TZ_PATH=$z/temp; return; }
-  done
+  if [ "$zp" != skin-msm-therm ]; then
+    TZ_PATH=$(find_zone skin-msm-therm)
+    [ -n "$TZ_PATH" ] && return
+  fi
+  if pick_zone_hottest is_cpu_zone; then TZ_PATH=$PZ_PATH; return; fi
+  pick_zone_hottest is_skin_zone && TZ_PATH=$PZ_PATH
 }
 
 # GPU 频率节点（开局探测一次，选第一个读得到非空值的）。
@@ -274,6 +395,9 @@ reset_session() {
   find_policies
   pick_gpu
   pick_fps_src
+  # lat 来源需要层名：开局按本局包名找一次（层名带 #编号，进程重启会变，所以每局都要重找）
+  [ "$FPS_SRC" = lat ] && lat_find_layer "$S_PKG"
+  [ "$FPS_SRC" = lat ] && [ -z "$LAT_LAYER" ] && FPS_SRC=none
   PREV_SF=""; PREV_UT=""; S_FN=0; S_IDLE=0; F_NOISE=0
   S_HZ=0; HZ_NOW=""; HZ_CAND=""; hi_reset; curve_reset
   echo "$S_PKG|$S_START" >"$CUR" 2>/dev/null
