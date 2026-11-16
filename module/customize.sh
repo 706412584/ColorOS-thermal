@@ -10,6 +10,8 @@ PLAT=$(getprop ro.board.platform)
 SOC=$(getprop ro.soc.manufacturer)
 ui_print "  机型：$(getprop ro.product.model)  平台：${PLAT:-?} ${SOC}"
 ui_print "  系统：${ROM:-非 ColorOS}  Android $(getprop ro.build.version.release)"
+ui_print "  默认温控：开启 · 仅游戏 · 机身 55°C / CPU 结温 80°C"
+ui_print "  智能调和与线程 affinity 默认关闭；无 WebUI 可用「运行」数字菜单。"
 
 if [ -z "$ROM" ]; then
   ui_print "! 未检测到 ColorOS / OxygenOS。"

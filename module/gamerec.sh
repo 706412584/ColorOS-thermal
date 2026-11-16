@@ -23,7 +23,7 @@
 #          或 /proc/gpufreq/gpufreq_opp_freq。开局探测一次，选第一个读到值的。
 #   温度   与 cpulimit.sh 同一套温区选择逻辑（skin-msm-therm → CPU 结温 → 外壳），
 #          记录最高值
-#   满频   msm_performance 上限节点处于解锁值（9999999）的时间占比
+#   性能   控制器回读验证的性能策略生效占比；旧版无状态文件时才回退高通节点口径
 #   电量   开局与结束的 capacity
 #
 # 注意：mksh 算术是 32 位。频率按 MHz 累加，避免长局溢出。
@@ -47,6 +47,8 @@ FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
 BATCAP=/sys/class/power_supply/battery/capacity
 BATST=/sys/class/power_supply/battery/status
 TOP_PROCS=/dev/cpuset/top-app/cgroup.procs
+PROC_ROOT=${GAMEREC_PROC_ROOT:-/proc}
+SMART_STATE_FILE=${GAMEREC_SMART_STATE_FILE:-/data/adb/oplus-cloud-block-data/smart.state}
 
 KEEP=50        # 保留最近 50 局
 GRACE=30       # 切后台超过 30s 算结束
@@ -60,6 +62,56 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [游戏记录] $*" >>"$LOG"; }
 # ---------- 读取（全部用内建 read，不 fork） ----------
 rd() { # $1 = 文件，结果放 RV
   RV=""; read -r RV 2>/dev/null <"$1"
+}
+
+smart_pid_alive() {
+  local rest expect=$2
+  [ -n "$1" ] && [ -n "$expect" ] || return 1
+  kill -0 "$1" 2>/dev/null || return 1
+  case "$(tr '\0' ' ' 2>/dev/null <"${PROC_ROOT}/$1/cmdline")" in
+    *cpulimit.sh*daemon*) ;;
+    *) return 1 ;;
+  esac
+  rest=$(sed 's/^.*) //' "${PROC_ROOT}/$1/stat" 2>/dev/null)
+  [ -n "$rest" ] || return 1
+  set -- $rest
+  [ "$#" -ge 20 ] || return 1
+  [ "$1" != Z ] || return 1
+  [ "${20}" = "$expect" ]
+}
+
+# 控制器状态只在状态变化时写入，记录器每拍只读几行，不执行 status 的重采样。
+smart_read_state() {
+  SM_PERF=0; SM_DAILY=0; SM_AFF=0; SM_STATE=""; SM_ERROR=""
+  SM_VALID=""; SM_CTRL=""; SM_START=""; SM_STALE=0; SM_LEGACY=0
+  [ -r "$SMART_STATE_FILE" ] || { SM_LEGACY=1; return 1; }
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      STATE_VALID) SM_VALID=$v ;;
+      CTRL_PID) SM_CTRL=$v ;;
+      CTRL_START) SM_START=$v ;;
+      SMART_STATE) SM_STATE=$v ;;
+      PERF_VERIFIED) [ "$v" = 1 ] && SM_PERF=1 ;;
+      DAILY_VERIFIED) [ "$v" = 1 ] && SM_DAILY=1 ;;
+      AFFINITY_VERIFIED) [ "$v" = 1 ] && SM_AFF=1 ;;
+      LAST_ERROR) SM_ERROR=$v ;;
+    esac
+  done <"$SMART_STATE_FILE"
+  if [ "$SM_VALID" = 0 ]; then
+    SM_STALE=1; SM_PERF=0; SM_DAILY=0; SM_AFF=0
+    return 1
+  fi
+  if [ "$SM_VALID" = 1 ]; then
+    if ! smart_pid_alive "$SM_CTRL" "$SM_START"; then
+      SM_STALE=1; SM_PERF=0; SM_DAILY=0; SM_AFF=0
+      return 1
+    fi
+  else
+    # 老版本没有身份字段时保留兼容，但由 sample 标为旧口径，不能当新控制器证据。
+    SM_LEGACY=1
+  fi
+  return 0
 }
 
 # 进程 pid -> 包名（去掉 :子进程）
@@ -385,7 +437,8 @@ reset_session() {
   S_START=$(date +%s)
   S_DUR=0; S_N=0; S_FSUM=0; S_FMIN=""; S_FMAX=0
   S_BSUM=0; S_BMAX=0; S_MSUM=0; S_GSUM=0; S_GMAX=0; S_GN=0
-  S_TMAX=""; S_UNL=0; S_CHG=0
+  S_TMAX=""; S_UNL=0; S_DAILY=0; S_AFF=0; S_QUALITY=0; S_SM_STATE=0; S_CHG=0
+  smart_read_state
   rd "$BATCAP"; S_BAT0=$RV
   rd "$BATST"; [ "$RV" = "Charging" ] && S_CHG=1
   # 帧率直方图（按整数 fps），用于 1% Low
@@ -398,6 +451,7 @@ reset_session() {
   # lat 来源需要层名：开局按本局包名找一次（层名带 #编号，进程重启会变，所以每局都要重找）
   [ "$FPS_SRC" = lat ] && lat_find_layer "$S_PKG"
   [ "$FPS_SRC" = lat ] && [ -z "$LAT_LAYER" ] && FPS_SRC=none
+  case "$FPS_SRC" in sf) S_FPS_CODE=1 ;; drm) S_FPS_CODE=2 ;; lat) S_FPS_CODE=3 ;; *) S_FPS_CODE=0 ;; esac
   PREV_SF=""; PREV_UT=""; S_FN=0; S_IDLE=0; F_NOISE=0
   S_HZ=0; HZ_NOW=""; HZ_CAND=""; hi_reset; curve_reset
   echo "$S_PKG|$S_START" >"$CUR" 2>/dev/null
@@ -527,7 +581,22 @@ sample() {
         rd "$TZ_PATH"
         case "$RV" in ''|*[!0-9-]*) ;; *) tnow=$RV; [ -z "$S_TMAX" ] || [ "$RV" -gt "$S_TMAX" ] && S_TMAX=$RV ;; esac
       fi
-      rd "$FREQ"; case "$RV" in *9999999*) S_UNL=$(( S_UNL + 1 )) ;; esac
+      if smart_read_state; then
+        [ "$SM_PERF" = 1 ] && S_UNL=$(( S_UNL + 1 ))
+        [ "$SM_DAILY" = 1 ] && S_DAILY=$(( S_DAILY + 1 ))
+        [ "$SM_AFF" = 1 ] && S_AFF=$(( S_AFF + 1 ))
+        case "$SM_STATE" in HOT|SENSOR_FAULT) S_QUALITY=$(( S_QUALITY | 1 )) ;; esac
+        [ -n "$SM_ERROR" ] && S_QUALITY=$(( S_QUALITY | 2 ))
+        case "$SM_STATE" in
+          PERF) S_SM_STATE=1 ;; DAILY) S_SM_STATE=2 ;; HOT) S_SM_STATE=3 ;;
+          SENSOR_FAULT) S_SM_STATE=4 ;; NEUTRAL) S_SM_STATE=5 ;;
+        esac
+      else
+        # 老版本或失效控制器：保留原始节点作参考，但明确标为旧/混合或陈旧样本。
+        S_QUALITY=$(( S_QUALITY | 16 ))
+        [ "$SM_STALE" = 1 ] && S_QUALITY=$(( S_QUALITY | 32 ))
+        rd "$FREQ"; case "$RV" in *9999999*) S_UNL=$(( S_UNL + 1 )) ;; esac
+      fi
       curve_add "$cf" "$tnow" "$b"
   }
 }
@@ -545,7 +614,8 @@ p1_low() {
 }
 
 # 结束并写入一条记录
-# 记录行（v1）：v1|开始时间|包名|时长s|平均fps×10|最低|最高|1%Low|大核均MHz|大核峰MHz|中核均MHz|GPU均MHz|GPU峰MHz|最高温mC|满频%|开局电量|结束电量|充电过
+# 记录行（v1）：v1|开始时间|包名|时长s|平均fps×10|最低|最高|1%Low|大核均MHz|大核峰MHz|中核均MHz|GPU均MHz|GPU峰MHz|最高温mC|旧解锁口径%|开局电量|结束电量|充电过
+# v4 在 v3 后追加 affinity%|daily%|质量标记|FPS来源码|最后智能状态码；旧字段顺序不变。
 end_session() {
   [ -n "$S_PKG" ] || return
   local pkg=$S_PKG dur=$(( S_DUR / 100 ))
@@ -571,12 +641,14 @@ end_session() {
   # 卡顿（只在有对局段时统计）：低于刷新率 90% 的秒数 | 最长连续卡顿秒数
   local jank="" jmax=""
   [ -n "$hz" ] && { jank=$S_JANK; jmax=$S_JMAX; }
-  # v1 的 18 个字段保持不变；v2 追加：刷新率|对局均×10|对局最低|对局最高|对局1%Low|对局时长s|静止s
-  # v3 再追加：卡顿秒数|最长连续卡顿秒数|有曲线(1/0)
+  # v1 的 18 个字段保持不变；v2 追加对局段；v3 追加卡顿/曲线。
+  # v4 追加：affinity生效%|日常生效%|质量标记|帧率来源码|最后智能状态码。
   mkdir -p "$DATA" 2>/dev/null
   local hc=0; [ -s "$CURVE_TMP" ] && hc=1
+  [ "$S_CHG" = 1 ] && S_QUALITY=$(( S_QUALITY | 4 ))
+  [ "$FPS_SRC" = none ] && S_QUALITY=$(( S_QUALITY | 8 ))
   curve_save "$S_START"
-  local line="v3|$S_START|$pkg|$dur|$favg|$S_FMIN|$fmax|$p1|$(( S_BSUM / S_N ))|$S_BMAX|$mavg|$gavg|$S_GMAX|$S_TMAX|$(( S_UNL * 100 / S_N ))|$S_BAT0|$bat1|$S_CHG|$hz|$havg|$hmin|$hmax|$hp1|$hdur|$(( S_IDLE / 100 ))|$jank|$jmax|$hc"
+  local line="v4|$S_START|$pkg|$dur|$favg|$S_FMIN|$fmax|$p1|$(( S_BSUM / S_N ))|$S_BMAX|$mavg|$gavg|$S_GMAX|$S_TMAX|$(( S_UNL * 100 / S_N ))|$S_BAT0|$bat1|$S_CHG|$hz|$havg|$hmin|$hmax|$hp1|$hdur|$(( S_IDLE / 100 ))|$jank|$jmax|$hc|$(( S_AFF * 100 / S_N ))|$(( S_DAILY * 100 / S_N ))|$S_QUALITY|${S_FPS_CODE:-0}|$S_SM_STATE"
   echo "$line" >>"$REC"
   # 只保留最近 KEEP 局
   if [ "$(grep -c '' "$REC" 2>/dev/null)" -gt "$KEEP" ]; then
@@ -648,6 +720,10 @@ start_daemon() {
   nohup sh "$0" daemon >/dev/null 2>&1 &
 }
 
+if [ "${GAMEREC_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 case "$1" in
   daemon) daemon ;;
   start)  [ -f "$OFF" ] && { echo "游戏记录已关闭"; exit 0; }; start_daemon; echo "游戏记录已启动" ;;
@@ -660,15 +736,18 @@ case "$1" in
     is_alive && echo "RUNNING=1" || echo "RUNNING=0"
     rd "$CUR"; echo "CUR=$RV"
     echo "NOW=$(date +%s)"
-    n=$(grep -cE '^v[123][|]' "$REC" 2>/dev/null); echo "COUNT=${n:-0}"
+    n=$(grep -cE '^v[1234][|]' "$REC" 2>/dev/null); echo "COUNT=${n:-0}"
     [ -s "$REC_BAK" ] && echo "UNDO=1" || echo "UNDO=0"
     # 采样能力自查：哪一项读不到就说明本机节点不同，写进诊断/WebUI，不用靠猜
     TZ_PATH=""; pick_zone; GPU_SRC=x; pick_gpu; pick_fps_src
     echo "TZ_PATH=${TZ_PATH:-无}"
+    ZT=""; [ -n "$TZ_PATH" ] && read -r ZT 2>/dev/null <"${TZ_PATH%/temp}/type"
+    echo "ZONE_USED=${ZT:-无}"
+    if is_cpu_zone "$ZT"; then echo "ZONE_T=cpu"; else echo "ZONE_T=skin"; fi
     echo "GPU_SRC=$GPU_SRC"
     echo "FPS_SRC=$FPS_SRC"
     ;;
-  list)   grep -E '^v[123][|]' "$REC" 2>/dev/null ;;
+  list)   grep -E '^v[1234][|]' "$REC" 2>/dev/null ;;
   curve)
     # $2 = 开局时间戳（纯数字，防路径穿越）
     case "$2" in ''|*[!0-9]*) echo "用法：gamerec.sh curve <时间戳>"; exit 1 ;; esac

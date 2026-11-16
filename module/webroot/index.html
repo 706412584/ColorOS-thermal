@@ -338,6 +338,18 @@
         </div>
       </div>
     </div>
+    <div class="row" style="cursor:default">
+      <div class="body">
+        <div class="name">智能调和 <span class="tag" id="cpulSmartTag">关闭</span></div>
+        <div class="desc" id="cpulSmartDesc">在「仅游戏」前台性能和日常系统调度之间自动切换。日常降顶只使用已验证机型档位；线程 affinity 只应用显式规则，不会自动猜关键线程。</div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab" id="cpulSmartToggle" style="padding:8px 12px">智能调和：关</button>
+          <button class="tab" id="cpulDailyToggle" style="padding:8px 12px">日常降顶：自动</button>
+          <button class="tab" id="cpulAffinityToggle" style="padding:8px 12px">线程 affinity：关</button>
+        </div>
+        <div class="desc" style="margin-top:6px" id="cpulSmartInfo">线程规则：先用 cpulimit.sh observe [包名] 只读观测，再写数据目录 smartsched.rules；没有规则不会扫描或修改线程。</div>
+      </div>
+    </div>
     <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">
       <button class="primary" id="cpulApply" style="padding:9px 12px">开启</button>
       <button id="cpulStop" style="padding:9px 12px">关闭并还原</button>
@@ -1168,8 +1180,7 @@ async function openFnPanel(id) {
   // 关键：先让 sheet 画出来，再做会阻塞主线程的 ksu.exec（否则首次点击看起来"无反应"）
   await paint();
   const clr = () => panel.classList.remove("fn-loading");
-  if (id === "cpul" && !funcLoaded.cpul) { funcLoaded.cpul = true; loadCpul().catch(clr); }
-  else if (id === "cpul") { clr(); }
+  if (id === "cpul") { funcLoaded.cpul = true; loadCpul().catch(clr); }
   if (id === "mem" && !funcLoaded.mem) { funcLoaded.mem = true; loadMemDetail().catch(clr); }
   else if (id === "mem") { clr(); }
   // 游戏记录每次打开都重读（可能刚玩完一局）
@@ -1689,6 +1700,32 @@ async function memClean() {
 
 /* ---------- CPU 上限解除 ---------- */
 let cpulLoaded = false, cpulConf = {}, cpulApplied = 0, cpulOrigTemp = 55000, cpulMode = "game";
+let cpulSmartEnable = 0, cpulDailyProfile = "auto", cpulAffinityEnable = 0, cpulStatusRaw = "", cpulApplyPending = false;
+
+function cpulSyncSmart() {
+  const smart = document.getElementById("cpulSmartToggle");
+  const daily = document.getElementById("cpulDailyToggle");
+  const aff = document.getElementById("cpulAffinityToggle");
+  if (smart) {
+    smart.textContent = "智能调和：" + (cpulSmartEnable ? "开" : "关");
+    smart.className = "tab" + (cpulSmartEnable ? " on" : "");
+  }
+  if (daily) {
+    daily.textContent = "日常降顶：" + (cpulDailyProfile === "off" ? "关" : "自动");
+    daily.className = "tab" + (cpulDailyProfile !== "off" ? " on" : "");
+  }
+  if (aff) {
+    aff.textContent = "线程 affinity：" + (cpulAffinityEnable ? "开" : "关");
+    aff.className = "tab" + (cpulAffinityEnable ? " on" : "");
+  }
+  const tag = document.getElementById("cpulSmartTag");
+  if (tag) {
+    const dirty = cpulSmartEnable !== (cpulConf.SMART_ENABLE === "1" ? 1 : 0)
+      || cpulDailyProfile !== (cpulConf.DAILY_PROFILE === "off" ? "off" : "auto")
+      || cpulAffinityEnable !== (cpulConf.AFFINITY_ENABLE === "1" ? 1 : 0);
+    tag.textContent = cpulApplyPending ? "待应用" : (dirty ? "待保存" : (cpulSmartEnable ? "已开启" : "关闭"));
+  }
+}
 // 温区：auto = 交给脚本自动挑（首选 skin-msm-therm，没有就用 CPU 结温，再没有退外壳）
 //       skin = 用户指定机身表面；换到没有该温区的机器上脚本仍会退回自动
 // shell_front 不再作为可选项：实测它在外壳 54°C 时只有 37~40°C，甚至同值不动，选了等于没有保护。
@@ -1739,7 +1776,14 @@ async function loadCpul() {
     const i = line.indexOf("=");
     if (i > 0) cfg[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
-  cpulConf = cfg; cpulLoaded = true;
+  cpulConf = cfg; cpulLoaded = true; cpulStatusRaw = st || "";
+  const currentSig = (cpulStatusRaw.match(/^CONF_SIG=(.*)$/m) || [])[1] || "";
+  const appliedSig = (cpulStatusRaw.match(/^APPLIED_CONF_SIG=(.*)$/m) || [])[1] || "";
+  cpulApplyPending = cfg.ENABLE === "1" && (!/状态：运行中/.test(cpulStatusRaw) || !currentSig || currentSig !== appliedSig);
+  cpulSmartEnable = cfg.SMART_ENABLE === "1" ? 1 : 0;
+  cpulDailyProfile = cfg.DAILY_PROFILE === "off" ? "off" : "auto";
+  cpulAffinityEnable = cfg.AFFINITY_ENABLE === "1" ? 1 : 0;
+  cpulSyncSmart();
   cpulMode = (cfg.MODE === "game" || cfg.MODE === "apps") ? cfg.MODE : "global";
   // 只有明确写了 skin-msm-therm 才算「指定机身」；shell_front 是旧配置里的无效选项，迁到自动
   cpulZone = cfg.ZONE === "skin-msm-therm" ? "skin-msm-therm" : "auto";
@@ -1764,9 +1808,8 @@ function renderCpul(st) {
   // 不能再用「当前上限里有 9999999」判断 —— 天玑没有 msm_performance 这个节点。
   const unlocked = /^LAYER_ON=1$/m.test(st);
   const isMtk = /^PLATFORM=mtk$/m.test(st);
-  // 实际上限有没有顶到硬件上限（脚本给的 CAPPED/CAP_INFO）。
-  // 不能只看节点 —— 节点是 9999999 但我们那层之外还有链路在压时，
-  // 报"已满频"就是骗用户（实测 Ace 2 Pro 的 OMRG、PLK110 都出现过）。
+  // 中大核上限是否顶到硬件上限（脚本给的 CAPPED/CAP_INFO）；小核不参与警告。
+  // 各簇原始值仍如实显示，不能用节点值代替实际频率。
   const capped = /^CAPPED=1$/m.test(st);
   const capInfo = (st.match(/^CAP_INFO=(.*)$/m) || [])[1] || "";
   // 每核显示「上限 / 硬件上限」：一眼看出有没有被压（上限=硬件上限即满频）
@@ -1817,8 +1860,14 @@ function renderCpul(st) {
   document.getElementById("cpulTempTag").textContent =
     (parseInt(cpulConf.TEMP || "55000", 10) / 1000).toFixed(1) + " / " +
     (parseInt(cpulConf.TEMP_CPU || "80000", 10) / 1000).toFixed(1) + "°C";
-  // 状态点与文案：已满频 / 待命(带原因) / 未开启
+  // 状态点与文案：性能 / 日常 / 中立 / 过热 / 写入冲突分别展示。
   const hint = (st.match(/STATE_HINT=(.*)/) || [])[1] || "";
+  const smartState = (st.match(/^SMART_STATE=(.*)$/m) || [])[1] || "";
+  const smartReason = (st.match(/^SMART_REASON=(.*)$/m) || [])[1] || "";
+  const smartError = (st.match(/^LAST_ERROR=(.*)$/m) || [])[1] || "";
+  const perfVerified = /^PERF_VERIFIED=1$/m.test(st);
+  const dailyVerified = /^DAILY_VERIFIED=1$/m.test(st);
+  const affVerified = /^AFFINITY_VERIFIED=1$/m.test(st);
   if (/UNSUPPORTED=1/.test(st)) {
     setDot("cpulDot", "off");
     document.getElementById("cpulState").textContent = "本机不支持";
@@ -1826,21 +1875,41 @@ function renderCpul(st) {
     for (const id of ["cpulApply", "cpulStop"]) { const b = document.getElementById(id); if (b) b.disabled = true; }
     return;
   }
-  // 只在「本应满频」时才用 CAPPED 报「被别的链路压着」。
-  // 「仅游戏」模式没开游戏时节点本来就被还原、频率也低，那是设计如此，
-  // 报成"被压"会让用户一打开 WebUI（游戏必然不在前台）就以为模块坏了。
   const fgName = ((st.match(/前台游戏 = (\S+)/) || [])[1] || "");
   const mode = cpulConf.MODE || "game";
   const shouldBeHot = mode === "global"? /状态：运行中/.test(st)
     : (mode === "game" ? (fgName && fgName !== "无") : false);
-  if (!running) { setDot("cpulDot", "off"); document.getElementById("cpulState").textContent = "未开启"; }
-  // 解锁了但实际频率没顶到上限 → 报"已解除，仍有别的限制"，而不是"已满频"。
-  // 这是最容易被误解的状态（截图看着满频、数字只有一两成）。
-  else if (unlocked && capped && shouldBeHot) { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "已解除，但被别的链路压着"; }
-  // 天玑是把"钉死"解开、让频率随负载走，不是把频率锁在最高档 ——
-  // 所以天玑上写「已满频」是错的（schedutil 下静置就该降频）。
-  else if (unlocked) { setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = isMtk ? "已解除钉频" : "已满频"; }
-  else { setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = hint || "待命（条件未满足）"; }
+  let smartText = "";
+  if (!running) {
+    setDot("cpulDot", "off"); document.getElementById("cpulState").textContent = "未开启";
+  } else if (smartState === "HOT") {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "过热保护（已收回）";
+    smartText = "温度达到阈值，性能/日常/线程改动均已撤销";
+  } else if (smartState === "SENSOR_FAULT") {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "温度传感器异常（已中立）";
+    smartText = "读不到可信温度，禁止解除频率限制";
+  } else if (smartReason === "daily_conflict") {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "日常档位冲突（保持系统值）";
+    smartText = "检测到外部服务改写，不再反复抢写";
+  } else if (smartState === "DAILY" && dailyVerified) {
+    setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "日常降顶（已验证）";
+    smartText = "非游戏状态，仅限制已验证的 CPU 最大频率";
+  } else if (smartState === "PERF" && !perfVerified && cpulSmartEnable) {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "性能写入未验证";
+    smartText = smartError || "写入或回读失败，保持中立/重试";
+  } else if (unlocked && capped && shouldBeHot) {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "中核/大核未满频";
+  } else if (unlocked) {
+    setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = isMtk ? "已解除钉频" : "已满频";
+  } else {
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent =
+      smartReason === "no_verified_daily" ? "日常系统调度（无已验证降顶档位）" : (hint || "待命（条件未满足）");
+  }
+  if (affVerified) smartText = (smartText ? smartText + " · " : "") + "线程 affinity 已回读验证";
+  if (smartError && smartReason !== "daily_conflict") smartText = (smartText ? smartText + " · " : "") + smartError;
+  document.getElementById("cpulSmartInfo").textContent = smartText ||
+    "线程规则：先用 cpulimit.sh observe [包名] 只读观测，再写数据目录 smartsched.rules；没有规则不会扫描或修改线程。";
+  cpulSyncSmart();
   cpulSyncModeTab();
   updateCpulBtn();
   // 底部一行说明：原来直接贴 status 原文（8 个核心的原始数值），看不懂。改成人话。
@@ -1856,32 +1925,53 @@ function renderCpul(st) {
     "前台游戏：" + (fgName && fgName !== "无" ? grecName(fgName) : "无"),
     "游戏场景限频：" + (gameOff ? "已解除" : "系统控制"),
     topTxt,
-    // 被别的链路压着时，把这个事实摆在最显眼的一行里，避免"看着满频其实很低"。
-    // 只在「本应满频」时才提示（理由同上面的 shouldBeHot）。
-    // CAP_INFO 形如 "0:72% 3:82%"，冒号前是核心组的 policy 号，写明单位免得看不懂。
-    (capped && capInfo && shouldBeHot) ? "实际被压到：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
+    // 只在「本应满频」且中大核未达上限时提示；小核不参与。
+    (capped && capInfo && shouldBeHot) ? "中/大核未满：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
   ].filter(Boolean).join(" · ");
 }
 
-function updateCpulBtn() {
-  const b = document.getElementById("cpulApply");
+function cpulHasUnsavedChanges() {
   const temp = parseInt(document.getElementById("cpulTemp").value, 10);
   const tempCpu = parseInt(document.getElementById("cpulTempCpu").value, 10);
   const appsChanged = cpulMode === "apps" && JSON.stringify(cpulApps) !== JSON.stringify(cpulAppliedApps);
-  // 关闭后配置是 ENABLE=0：此时按钮必须可点（否则参数没改就显示「已生效」，开不回来）
-  const off = cpulConf.ENABLE !== "1";
-  // 配置里没写 ZONE 时脚本按自动处理，所以空串要和 auto 等价，否则一进面板就显示"未保存"
   const confZone = (!cpulConf.ZONE || cpulConf.ZONE === "auto" || cpulConf.ZONE === "shell_front")
     ? "auto" : cpulConf.ZONE;
-  const changed = temp !== cpulApplied || tempCpu !== cpulAppliedCpuTemp
+  return temp !== cpulApplied || tempCpu !== cpulAppliedCpuTemp
     || cpulMode !== (cpulConf.MODE || "game")
-    || cpulZone !== confZone || appsChanged;
+    || cpulZone !== confZone || appsChanged
+    || cpulSmartEnable !== (cpulConf.SMART_ENABLE === "1" ? 1 : 0)
+    || cpulDailyProfile !== (cpulConf.DAILY_PROFILE === "off" ? "off" : "auto")
+    || cpulAffinityEnable !== (cpulConf.AFFINITY_ENABLE === "1" ? 1 : 0);
+}
+function updateCpulBtn() {
+  const b = document.getElementById("cpulApply");
+  // 关闭后配置是 ENABLE=0：此时按钮必须可点（否则参数没改就显示「已生效」，开不回来）
+  const off = cpulConf.ENABLE !== "1";
+  const changed = cpulHasUnsavedChanges();
   b.disabled = !off && !changed;
-  b.textContent = off ? "开启" : (changed ? "保存并开启" : "已生效");
+  b.textContent = off ? "开启" : (changed ? "保存并开启" : (cpulApplyPending ? "待应用" : "已生效"));
 }
 
 function fmtTempC(){ return (parseInt(document.getElementById("cpulTemp").value,10)/1000).toFixed(1)+"°C"; }
 function fmtTempCpu(){ return (parseInt(document.getElementById("cpulTempCpu").value,10)/1000).toFixed(1)+"°C"; }
+
+// 以设备现有配置为底合并，保留未知键，避免 WebUI 保存时丢掉新功能或用户自定义项。
+function cpulSerializeConf(mode) {
+  const merged = Object.assign({}, cpulConf, {
+    ENABLE: "1",
+    TEMP: String(parseInt(document.getElementById("cpulTemp").value, 10)),
+    TEMP_CPU: String(parseInt(document.getElementById("cpulTempCpu").value, 10)),
+    ZONE: cpulZone,
+    MODE: mode,
+    HYST: cpulConf.HYST || "3000",
+    SMART_ENABLE: String(cpulSmartEnable),
+    DAILY_PROFILE: cpulDailyProfile,
+    AFFINITY_ENABLE: String(cpulAffinityEnable)
+  });
+  return "# 由「温控性能」WebUI 生成\n" + Object.keys(merged)
+    .filter(k => k && merged[k] !== undefined && merged[k] !== null)
+    .map(k => k + "=" + merged[k]).join("\n") + "\n";
+}
 
 // 写入配置并应用（mode 可选；默认用当前 cpulMode）。供「保存并开启」和「保存选择」复用。
 async function cpulWriteConf(mode) {
@@ -1890,13 +1980,12 @@ async function cpulWriteConf(mode) {
   const vc = parseInt(document.getElementById("cpulTempCpu").value, 10);
   showLoad("正在应用 CPU 上限配置…");
   await paint();
-  // ZONE 写 auto 时脚本按"没配"处理（走自动挑选），这样跨机型不会带错温区名
-  const conf = "# 由「温控性能」WebUI 生成\nENABLE=1\nTEMP=" + v + "\nTEMP_CPU=" + vc +
-    "\nZONE=" + cpulZone + "\nMODE=" + mode + "\nHYST=" + (cpulConf.HYST || "3000") + "\n";
+  const conf = cpulSerializeConf(mode);
   const appsCsv = (mode === "apps" ? cpulApps : []).join("\n");
   const r = await exec(
-    "echo '" + conf.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.conf"' +
-    "; printf '%s\\n' '" + appsCsv.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.apps"' +
+    "echo '" + conf.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.conf.tmp"' +
+    " && mv -f " + '"' + MODDIR + '/cpulimit.conf.tmp" "' + MODDIR + '/cpulimit.conf"' +
+    " && printf '%s\\n' '" + appsCsv.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.apps"' +
     " && sh " + '"' + MODDIR + '/cpulimit.sh"' + " apply"
   );
   if (r.errno !== 0) {
@@ -1907,11 +1996,20 @@ async function cpulWriteConf(mode) {
   cpulOrigCpuTemp = Math.min(cpulOrigCpuTemp, vc);
   cpulApplied = v; cpulAppliedZone = cpulZone; cpulAppliedApps = cpulApps.slice();
   cpulAppliedCpuTemp = vc;
-  await loadCpul().catch(() => {});
+  // 等守护发布同一配置代次；超时只能报告“已保存、待应用”，不能冒充已生效。
+  for (let i = 0; i < 14; i++) {
+    await loadCpul().catch(() => {});
+    if (!cpulApplyPending) break;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
   const modeName = mode === "game" ? "仅游戏" : (mode === "apps" ? ("指定应用 " + cpulApps.length + " 个") : "全局");
-  endLoad(true, "已开启（" + (v/1000).toFixed(1) + " / " + (vc/1000).toFixed(1) + "°C · " + modeName + "）");
-  toast("CPU 上限已解除");
-  if (mode === "apps") openFnPanel("cpul");   // 从选择器返回时回到温控面板
+  const err = (cpulStatusRaw.match(/^LAST_ERROR=(.+)$/m) || [])[1] || "";
+  const pending = cpulApplyPending;
+  endLoad(!err && !pending, err ? ("配置已保存，但节点未完全生效：" + err) :
+    (pending ? "已保存，等待守护应用" :
+      ("已应用（" + (v/1000).toFixed(1) + " / " + (vc/1000).toFixed(1) + "°C · " + modeName + "）")));
+  toast(err ? "配置已保存，实际状态请查看面板" : (pending ? "已保存，待应用" : "配置已应用"));
+  if (mode === "apps") openFnPanel("cpul");
 }
 
 async function cpulApplyConf() {
@@ -1947,10 +2045,12 @@ async function cpulStop() {
   try {
     showLoad("正在还原出厂上限…");
     await paint();
-    await exec('sh "' + MODDIR + '/cpulimit.sh" stop');
+    const r = await exec('sh "' + MODDIR + '/cpulimit.sh" stop');
     await loadCpul().catch(() => {});
-    endLoad(true, "已还原");
-    toast("已还原出厂上限");
+    if (r.errno !== 0) throw new Error((r.stderr || r.stdout || "恢复失败").trim());
+    const err = (cpulStatusRaw.match(/^LAST_ERROR=(.+)$/m) || [])[1] || "";
+    endLoad(!err, err ? ("已停止，但恢复仍需重试：" + err) : "已还原");
+    toast(err ? "部分资源恢复失败，请查看状态" : "已还原模块持有的资源");
   } catch (e) {
     endLoad(false, "失败：" + (e && e.message ? e.message : e));
   } finally { btn.disabled = false; btn.textContent = "关闭并还原"; }
@@ -1961,7 +2061,8 @@ async function cpulStop() {
 // v2 在 v1 的 18 个字段后追加对局段（最高刷新率档位）统计与静止时长
 // v3 再追加卡顿秒数、最长连续卡顿、是否有曲线
 const GREC_F = ["v","start","pkg","dur","favg10","fmin","fmax","p1","bavg","bmax","mavg","gavg","gmax","tmax","unl","bat0","bat1","chg",
-                "hz","havg10","hmin","hmax","hp1","hdur","idle","jank","jmax","curve"];
+                "hz","havg10","hmin","hmax","hp1","hdur","idle","jank","jmax","curve",
+                "aff_pct","daily_pct","quality_flags","fps_src_code","profile_code"];
 let grecEnabled = true, grecLabels = {}, grecGameTemp = {};
 // 按游戏设的阈值存的是「相对当前温区基础阈值的差值」（毫摄氏度），不是绝对值。
 // 绝对值在换温区时会变成荒谬的阈值（同一个 55°C，机身量程 30~60，CPU 结温量程 50~95）。
@@ -1977,11 +2078,25 @@ function grecThFor(pkg) {
 
 function grecParse(line) {
   const a = line.split("|");
-  if (!/^v[123]$/.test(a[0]) || a.length < 18) return null;
+  const min = { v1: 18, v2: 25, v3: 28, v4: 33 }[a[0]];
+  if (!min || a.length < min) return null;
+  for (let i = 3; i < a.length; i++) if (a[i] !== "" && !Number.isFinite(+a[i])) return null;
   const o = {};
   GREC_F.forEach((k, i) => { o[k] = k === "pkg" || k === "v" ? a[i] : (a[i] === undefined || a[i] === "" ? null : +a[i]); });
   return o;
 }
+function grecQualityText(q) {
+  if (!q) return "样本质量正常";
+  const a = [];
+  if (q & 1) a.push("温度/传感器异常");
+  if (q & 2) a.push("写入或冲突");
+  if (q & 4) a.push("充电");
+  if (q & 8) a.push("无帧率");
+  if (q & 16) a.push("旧口径/混合来源");
+  if (q & 32) a.push("控制器已失效");
+  return a.join("、") + "（A/B 需谨慎）";
+}
+
 function grecDur(s) {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
   return h ? h + " 小时 " + m + " 分" : (m ? m + " 分 " + (s % 60) + " 秒" : s + " 秒");
@@ -2001,13 +2116,16 @@ async function loadGameRec() {
   for (const ln of (gt || "").split("\n")) {
     const i = ln.indexOf("="); if (i > 0) { const v = parseInt(ln.slice(i + 1), 10); if (v) grecGameTemp[ln.slice(0, i).trim()] = v; }
   }
-  // 温控阈值显示需要全局 TEMP：没打开过温控面板时 cpulConf 为空，这里补读
-  if (!cpulConf.TEMP) {
-    const c = await exec('grep "^TEMP=" "' + MODDIR + '/cpulimit.conf" 2>/dev/null');
-    const m = (c.stdout || "").match(/TEMP=(\d+)/); if (m) cpulConf.TEMP = m[1];
+  // 温控阈值显示需要全局 TEMP/TEMP_CPU：直接打开记录页时也要补齐。
+  if (!cpulConf.TEMP || !cpulConf.TEMP_CPU) {
+    const c = await exec('grep -E "^(TEMP|TEMP_CPU)=" "' + MODDIR + '/cpulimit.conf" 2>/dev/null');
+    for (const ln of (c.stdout || "").split("\n")) {
+      const m = ln.match(/^(TEMP_CPU|TEMP)=(\d+)/); if (m) cpulConf[m[1]] = m[2];
+    }
   }
   const kv = {};
   for (const ln of (st || "").split("\n")) { const i = ln.indexOf("="); if (i > 0) kv[ln.slice(0, i)] = ln.slice(i + 1).trim(); }
+  if (kv.ZONE_T) cpulProtZone = kv.ZONE_T;
   grecEnabled = kv.ENABLED !== "0";
   const recs = (list || "").split("\n").map(s => grecParse(s.trim())).filter(Boolean).reverse();
 
@@ -2089,8 +2207,12 @@ async function loadGameRec() {
         '<div><div class="k">大核 均 / 峰</div><div class="v">' + ghz(x.bavg) + " / " + ghz(x.bmax) + '</div></div>' +
         '<div><div class="k">GPU 均 / 峰</div><div class="v">' + (x.gavg == null ? "—" : x.gavg + " / " + x.gmax + " MHz") + '</div></div>' +
         '<div><div class="k">中核 均</div><div class="v">' + ghz(x.mavg) + '</div></div>' +
-        '<div><div class="k">满频占比</div><div class="v">' + (x.unl == null ? "—" : x.unl + "%") + '</div></div>' +
+        '<div><div class="k">' + (x.v === "v4" && !(x.quality_flags & 48) ? "性能策略生效" : "旧/混合口径") + '</div><div class="v">' + (x.unl == null ? "—" : x.unl + "%") + '</div></div>' +
       '</div>' +
+      (x.v === "v4" ? '<div class="desc" style="margin-top:6px">' +
+        esc("日常策略 " + (x.daily_pct == null ? "—" : x.daily_pct + "%") +
+          " · 线程 affinity " + (x.aff_pct == null ? "—" : x.aff_pct + "%") +
+          (x.quality_flags ? " · " + grecQualityText(x.quality_flags) : " · 样本质量正常")) + '</div>' : '') +
       (segNote ? '<div class="desc" style="margin-top:6px">' + esc(segNote) + '</div>' : '') +
       (jank ? '<div class="desc" style="margin-top:3px">' + esc(jank) + '</div>' : '') +
       '<div class="desc" style="margin-top:3px">机身最高 <b style="color:' + (hot ? "var(--warn)" : "inherit") + '">' + tmax + '</b>' +
@@ -2383,10 +2505,29 @@ async function cleanRestore() {
   document.getElementById("cpulModeGlobal").addEventListener("click", () => setMode("global"));
   document.getElementById("cpulModeGame").addEventListener("click", () => setMode("game"));
   document.getElementById("cpulModeApps").addEventListener("click", () => setMode("apps"));
+  document.getElementById("cpulSmartToggle").addEventListener("click", () => {
+    cpulSmartEnable = cpulSmartEnable ? 0 : 1; cpulSyncSmart(); updateCpulBtn();
+  });
+  document.getElementById("cpulDailyToggle").addEventListener("click", () => {
+    cpulDailyProfile = cpulDailyProfile === "off" ? "auto" : "off"; cpulSyncSmart(); updateCpulBtn();
+  });
+  document.getElementById("cpulAffinityToggle").addEventListener("click", () => {
+    cpulAffinityEnable = cpulAffinityEnable ? 0 : 1; cpulSyncSmart(); updateCpulBtn();
+  });
   document.getElementById("cpulPickApps").addEventListener("click", openAppPicker);
   document.getElementById("cpulApply").addEventListener("click", cpulApplyConf);
   document.getElementById("cpulStop").addEventListener("click", cpulStop);
   document.getElementById("cpulRefresh").addEventListener("click", () => { loadCpul().catch(() => {}); });
+  // 温控状态每 5 秒自动刷新；只在面板可见且无未保存修改时执行，避免覆盖用户输入和并发 exec。
+  let cpulAutoBusy = false;
+  setInterval(async () => {
+    const sheet = document.getElementById("sheet");
+    if (fnCurrent !== "cpul" || !curPanelEl || curPanelEl.id !== "cpulPanel"
+      || !sheet.classList.contains("show") || ovBusy || cpulApplyPending
+      || cpulAutoBusy || cpulHasUnsavedChanges()) return;
+    cpulAutoBusy = true;
+    try { await loadCpul(); } catch (e) {} finally { cpulAutoBusy = false; }
+  }, 5000);
 
   // 游戏记录
   document.getElementById("grecRefresh").addEventListener("click", () => { loadGameRec().catch(() => {}); });

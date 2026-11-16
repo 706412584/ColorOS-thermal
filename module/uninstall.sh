@@ -24,12 +24,20 @@ rm -f /data/adb/oplus-gamerec.pid
 # 优先用模块自带的 stop（内含精确还原 + 撤销 chmod 444 锁）
 if [ -f "$MODDIR/cpulimit.sh" ]; then
   sh "$MODDIR/cpulimit.sh" stop >/dev/null 2>&1
+  # stop 失败时再走一次统一事务恢复（含 daily 和 TID affinity）。
+  sh "$MODDIR/cpulimit.sh" recover >/dev/null 2>&1
 fi
 # 兜底：杀掉残留守护
 PIDFILE=/data/adb/oplus-cpulimit.pid
 if [ -f "$PIDFILE" ]; then
-  kill -9 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
-  rm -f "$PIDFILE"
+  p=$(cat "$PIDFILE" 2>/dev/null)
+  case "$p" in
+    ''|*[!0-9]*) ;;
+    *) case "$(tr '\0' ' ' 2>/dev/null <"/proc/$p/cmdline")" in
+         *cpulimit.sh*daemon*) kill -9 "$p" 2>/dev/null ;;
+       esac ;;
+  esac
+  rm -f "$PIDFILE" "$PIDFILE.start"
 fi
 for r in 1 2 3; do
   pids=""
@@ -45,7 +53,8 @@ done
 # 这里是"stop 没生效"时的保险）。备份不存在说明本模块从没解开过它，不动。
 MTK_BAK=/data/adb/oplus-cloud-block-data/mtk_freq.orig
 MTK_ON=/data/adb/oplus-cloud-block-data/mtk.on
-if [ -s "$MTK_BAK" ] && [ -f "$MTK_ON" ]; then
+MTK_TXN=/data/adb/oplus-cloud-block-data/mtk.txn
+if [ -s "$MTK_BAK" ] && { [ -f "$MTK_ON" ] || [ -f "$MTK_TXN" ]; }; then
   while IFS=' ' read -r k hw mn mx gv; do
     [ -n "$k" ] || continue
     [ -d "/sys/devices/system/cpu/cpufreq/policy$k" ] || continue
@@ -53,7 +62,7 @@ if [ -s "$MTK_BAK" ] && [ -f "$MTK_ON" ]; then
     case "$mx" in ''|*[!0-9]*) ;; *) printf '%s' "$mx" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_max_freq" 2>/dev/null ;; esac
     case "$mn" in ''|*[!0-9]*) ;; *) printf '%s' "$mn" >"/sys/devices/system/cpu/cpufreq/policy$k/scaling_min_freq" 2>/dev/null ;; esac
   done <"$MTK_BAK"
-  rm -f "$MTK_ON"
+  rm -f "$MTK_ON" "$MTK_TXN"
 fi
 
 # 兜底：只有节点仍是解锁值（说明 stop 没生效）才复位。
@@ -63,7 +72,9 @@ FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
 # 老内核（如 4.14）上同一个节点在 /sys/module 下
 [ -e "$FREQ" ] || FREQ=/sys/module/msm_performance/parameters/cpu_max_freq
 BAK=/data/adb/oplus-cloud-block-data/cpu_max_freq.orig
-if [ -e "$FREQ" ] && grep -q 9999999 "$FREQ" 2>/dev/null; then
+QCOM_ON=/data/adb/oplus-cloud-block-data/qcom.on
+QCOM_TXN=/data/adb/oplus-cloud-block-data/qcom.txn
+if [ -e "$FREQ" ] && { [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ]; } && [ -s "$BAK" ] && grep -q 9999999 "$FREQ" 2>/dev/null; then
   ORIG=$(sed 's/[[:space:]]*$//' "$BAK" 2>/dev/null)
   case "$ORIG" in ''|*9999999*)
     if [ "$(getprop ro.product.model)" = PJA110 ]; then
@@ -80,7 +91,17 @@ if [ -e "$FREQ" ] && grep -q 9999999 "$FREQ" 2>/dev/null; then
   chmod 644 "$FREQ" 2>/dev/null
   printf '%s' "$ORIG" > "$FREQ" 2>/dev/null
 fi
-printf '0' > /proc/game_opt/disable_cpufreq_limit 2>/dev/null
+if ! grep -q 9999999 "$FREQ" 2>/dev/null; then
+  rm -f "$QCOM_ON" "$QCOM_TXN"
+fi
+GAME_ON=/data/adb/oplus-cloud-block-data/game_opt.on
+GAME_PREV=/data/adb/oplus-cloud-block-data/game_opt.orig
+if [ -f "$GAME_ON" ]; then
+  orig=0
+  [ -f "$GAME_PREV" ] && read -r orig <"$GAME_PREV"
+  case "$orig" in 0|1) printf '%s' "$orig" > /proc/game_opt/disable_cpufreq_limit 2>/dev/null ;; esac
+  rm -f "$GAME_ON" "$GAME_PREV"
+fi
 rm -f /data/adb/oplus-cpulimit.hot /data/adb/oplus-cpulimit.top
 
 # 日志随模块删除（备份数据目录保留，含 CPU 原值与云控快照，便于重装后回滚）
