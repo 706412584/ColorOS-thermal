@@ -104,6 +104,21 @@ SMART_ENABLE=0      # 智能调和默认关闭，升级后不改变旧行为
 DAILY_PROFILE=auto  # auto = 有已验证日常档位才降顶；off = 始终系统中立
 AFFINITY_ENABLE=0   # 只有显式游戏规则时才允许写 TID affinity
 DAILY_WAIT=30       # 非性能持续多少秒后才尝试日常档位（代码常量，不在首版 UI 暴露）
+# ---- 游戏热预算（默认全关，高通平台；v01.7.75） ----
+# 现场证据（PJA110 实测吃鸡 20 分钟）：大核 3187MHz 尾部功耗把 CPU 温区推到 73~76°C，
+# GPU 到 67°C 后厂商温控把 GPU 压到 475MHz、亮度落 8 档 —— 掉帧与变暗同源。
+# 皮肤 52.5°C 远晚于这一切，按皮肤收回救不了 GPU。思路：把大核尾部热让给 GPU。
+GAME_CPU_SWEET=off  # off | hw：游戏时大核钉在硬件原生上限（如 3187→2803），省尾部热
+GPU_GUARD=off       # off | 1：GPU 过热保护，达到 GPU_GUARD_TEMP 降大核频率（仅高通 kgsl）
+GPU_GUARD_TEMP=60000    # GPU 过热触发线，毫摄氏度。实测降档发生在 67°C，60 留提前量
+GPU_GUARD_ACTION=sweet  # sweet=大核落稳健档；neutral=整体降频（更保守）
+DISP_GUARD=off      # off | 1：防掉帧变暗（显示温控触发前主动降频）。
+                    # 实测 PJA110：显示温度 49°C 触发 gear11 → 屏幕切 60Hz（帧率被 vsync 锁死）
+                    # 并落 100nit 限亮档；彼时皮肤温区稳定 52+。本保护用皮肤做触发信号。
+DISP_GUARD_TEMP=51500   # 防掉帧触发线。到线整体降频（显示红线不折中、最快降温），
+                    # 降到线-HYST 且连续两拍才恢复。模块温区解析成 CPU 结温的机型不启用。
+GAME_GPU_CAP=off    # off | kHz：实验性 GPU 上限（须在本机 available_frequencies 里）。
+                    # 只降上限、不锁只读、不与温控抢写；厂商压得更低时让它压（保护优先）
 SMART_STATE=NEUTRAL
 SMART_REASON=initial
 SMART_WANT=0
@@ -117,6 +132,15 @@ DAILY_PROFILE_RESULT=1
 HOT_CLEAR_N=0
 HOT_TH=""
 SENSOR_CLEAR_N=0
+# GPU 过热保护的运行态（守护内存，重启后按当前温度重判）
+GPU_T=""
+GPU_HOT_ON=0
+GPU_CLEAR_N=0
+# 防掉帧保护的运行态（信号 = 模块皮肤温区 T_NOW，零新增读）
+DISP_HOT_ON=0
+DISP_CLEAR_N=0
+SWEET_STR=""
+GPU_AVAIL_MAX=""
 PERF_VERIFIED=0
 DAILY_VERIFIED=0
 AFFINITY_VERIFIED=0
@@ -170,6 +194,13 @@ load_conf() {
       SMART_ENABLE) [ -n "$val" ] && SMART_ENABLE=$val ;;
       DAILY_PROFILE) [ -n "$val" ] && DAILY_PROFILE=$val ;;
       AFFINITY_ENABLE) [ -n "$val" ] && AFFINITY_ENABLE=$val ;;
+      GAME_CPU_SWEET) [ -n "$val" ] && GAME_CPU_SWEET=$val ;;
+      GPU_GUARD) [ -n "$val" ] && GPU_GUARD=$val ;;
+      GPU_GUARD_TEMP) [ -n "$val" ] && GPU_GUARD_TEMP=$val ;;
+      GPU_GUARD_ACTION) [ -n "$val" ] && GPU_GUARD_ACTION=$val ;;
+      DISP_GUARD) [ -n "$val" ] && DISP_GUARD=$val ;;
+      DISP_GUARD_TEMP) [ -n "$val" ] && DISP_GUARD_TEMP=$val ;;
+      GAME_GPU_CAP) [ -n "$val" ] && GAME_GPU_CAP=$val ;;
     esac
   done <"$CONF"
   # 非数字、溢出或不合理的值回落默认，避免比较失败后误判为未达阈值。
@@ -184,6 +215,15 @@ load_conf() {
   case "$SMART_ENABLE" in 0|1) ;; *) SMART_ENABLE=0 ;; esac
   case "$AFFINITY_ENABLE" in 0|1) ;; *) AFFINITY_ENABLE=0 ;; esac
   case "$DAILY_PROFILE" in auto|off) ;; *) DAILY_PROFILE=auto ;; esac
+  case "$GAME_CPU_SWEET" in off|hw) ;; *) GAME_CPU_SWEET=off ;; esac
+  case "$GPU_GUARD" in 1|on) GPU_GUARD=1 ;; *) GPU_GUARD=off ;; esac
+  valid_mC "$GPU_GUARD_TEMP" && [ "$VALID_MC" -ge 40000 ] && GPU_GUARD_TEMP=$VALID_MC || GPU_GUARD_TEMP=60000
+  case "$GPU_GUARD_ACTION" in sweet|neutral) ;; *) GPU_GUARD_ACTION=sweet ;; esac
+  case "$DISP_GUARD" in 1|on) DISP_GUARD=1 ;; *) DISP_GUARD=off ;; esac
+  valid_mC "$DISP_GUARD_TEMP" && [ "$VALID_MC" -ge 45000 ] && DISP_GUARD_TEMP=$VALID_MC || DISP_GUARD_TEMP=51500
+  case "$GAME_GPU_CAP" in ''|off) GAME_GPU_CAP=off ;; esac
+  case "$GAME_GPU_CAP" in *[!0-9]*) GAME_GPU_CAP=off ;; esac
+  [ "$GAME_GPU_CAP" -le 100000000 ] 2>/dev/null && GAME_GPU_CAP=off
 }
 
 # 持久化开关（stop 必须写 ENABLE=0，否则看护循环 120s 后会按 ENABLE=1 重新拉起）
@@ -312,6 +352,206 @@ disable_game() {
   rm -f "$GAME_ON" "$GAME_PREV"
 }
 game_opt_ok()  { local v=""; read -r v 2>/dev/null <"$GAMEDIS"; [ "$v" = "1" ]; }
+
+# ==== 游戏热预算（高通 kgsl；默认全关） ====
+# 三个独立开关（对外统称「游戏热预算」），全部只动"本模块已有所有权"的节点或纯降上限：
+#   ① GAME_CPU_SWEET（稳健档）：msm 层写"每核硬件原生上限"而不是 9999999。
+#      与完整解锁同一个节点、同一套事务/只读锁，不新增所有权；还原路径不变。
+#   ② GPU_GUARD：读 kgsl 温度过热就降大核（皮肤信号太慢，实测降档时皮肤才 52.5°C）。
+#   ③ GAME_GPU_CAP：写 kgsl devfreq max_freq。只降上限、不 chmod 锁死 ——
+#      厂商温控要压得更低时必须让它压（保护优先），我们只在它放开后重新盖上。
+GPU_SYS=${CPULIMIT_GPU_SYS:-/sys/class/kgsl/kgsl-3d0}
+GPU_TEMPF=$GPU_SYS/temp
+GPU_MAXF=$GPU_SYS/devfreq/max_freq
+GPU_AVAIL=$GPU_SYS/devfreq/available_frequencies
+GPU_PWL=$GPU_SYS/thermal_pwrlevel
+GPU_BAK="$DATA/gpu_max.orig"
+GPU_ON="$DATA/gpu.on"
+GPU_TXN="$DATA/gpu.txn"
+
+# ---- ① 大核稳健档（内部名 sweet，WebUI 称「稳健档」） ----
+# SWEET_STR 形如 "0:2016000 1:2016000 … 7:2803200"（每核 cpuinfo_max_freq）。
+# 拓扑读不全时稳健档不可用，调用方回退完整解锁（fail-safe）。
+# ★ 不缓存（每次重建，8 次内建 read 零 fork）：实测 PJA110 的 cpuinfo_max_freq
+#   是动态的 —— idle 读 3187200、游戏中被 oplus 压到 2803200（game_opt 甚至有
+#   fake_cpu7_cpuinfo_max_freq 节点）。缓存会把 idle 值带进游戏，稳健档静默失效。
+#   每次重建则游戏期间自然拿到 2803，厂商中途改值也会在下一拍自纠。
+sweet_string() {
+  local c id hw out=""
+  for c in ${CPU_ROOT}/cpu[0-9]*; do
+    [ -d "$c" ] || continue
+    id=${c##*cpu}
+    hw=""; read -r hw 2>/dev/null <"$c/cpufreq/cpuinfo_max_freq"
+    case "$hw" in ''|*[!0-9]*) SWEET_STR=""; return 1 ;; esac
+    [ "$hw" -gt 0 ] || { SWEET_STR=""; return 1; }
+    out="$out${out:+ }$id:$hw"
+  done
+  [ -n "$out" ] || { SWEET_STR=""; return 1; }
+  SWEET_STR=$out
+  return 0
+}
+
+sweet_on() {
+  # 注意：printf '%s' 写入无尾换行，read 在 EOF 无换行时返回非零但变量已赋值
+  #（模块既有 write_checked 同样忽略 read 返回码），不能用 || return 判断。
+  [ -n "$SWEET_STR" ] || return 1
+  local v=""
+  read -r v 2>/dev/null <"$FREQ"
+  [ "$v" = "$SWEET_STR" ]
+}
+
+unlock_sweet() {
+  [ -e "$FREQ" ] || return 1
+  sweet_string || return 1
+  qcom_write_txn || return 1
+  chmod 644 "$FREQ" 2>/dev/null || return 1
+  if ! printf '%s' "$SWEET_STR" >"$FREQ" 2>/dev/null; then
+    chmod 644 "$FREQ" 2>/dev/null
+    return 1
+  fi
+  chmod 444 "$FREQ" 2>/dev/null || return 1
+  sweet_on
+}
+
+# ---- ② GPU 过热保护 ----
+# 读毫摄氏度放 GPU_T；读不到给空（kgsl 不存在/天玑 → 保护不生效，如实静默）。
+read_gpu_temp() {
+  GPU_T=""
+  read -r GPU_T 2>/dev/null <"$GPU_TEMPF"
+  valid_mC "$GPU_T" && GPU_T=$VALID_MC || GPU_T=""
+}
+
+# 滞回与 HOT 同理念：降频后要降到 GPU_GUARD_TEMP-HYST 以下、连续两拍才恢复。
+# 返回 0 = 降频中。守护每 5s 一拍，纯内建 read，无 fork。
+update_gpu_hot() {
+  if [ "$GPU_GUARD" != 1 ]; then GPU_HOT_ON=0; GPU_CLEAR_N=0; return 1; fi
+  [ -n "$GPU_T" ] || return 1
+  if [ "$GPU_HOT_ON" = 1 ]; then
+    if [ "$GPU_T" -lt $((GPU_GUARD_TEMP - HYST)) ]; then
+      GPU_CLEAR_N=$((GPU_CLEAR_N + 1))
+      if [ "$GPU_CLEAR_N" -ge 2 ]; then
+        GPU_HOT_ON=0; GPU_CLEAR_N=0
+        log "GPU ${GPU_T} 低于 $((GPU_GUARD_TEMP - HYST))，GPU 过热保护解除，恢复性能状态"
+        return 1
+      fi
+    else
+      GPU_CLEAR_N=0
+    fi
+    return 0
+  fi
+  if [ "$GPU_T" -ge "$GPU_GUARD_TEMP" ]; then
+    GPU_HOT_ON=1; GPU_CLEAR_N=0
+    log "GPU ${GPU_T} 过热（${GPU_GUARD_TEMP}），大核降频"
+    return 0
+  fi
+  return 1
+}
+
+# ---- ②b 防掉帧变暗（显示温控触发线） ----
+# 信号 = 模块皮肤温区（T_NOW，每拍已读，零新增 fork）。为什么要显示保护：
+# 显示温控的 gear 表在显示温度 49°C 落 gear11 → 屏幕切 60Hz（vsync 锁死游戏帧率）
+# + 100nit 限亮，实测"第二局掉帧+变暗"的直接执行者。显示传感器走 HAL 不可 fork-free
+# 读取，但实测 60Hz 卡窗口期间皮肤稳定 52+（前壳会跌回 47，咬不住）——皮肤是可靠信号。
+# 只在模块温区级别是皮肤（ZONE_T=skin）时生效；解析成 CPU 结温的机型如实不启用。
+update_disp_hot() {
+  if [ "$DISP_GUARD" != 1 ]; then DISP_HOT_ON=0; DISP_CLEAR_N=0; return 1; fi
+  [ -n "$T_NOW" ] && [ "$ZONE_T" = skin ] || return 1
+  if [ "$DISP_HOT_ON" = 1 ]; then
+    if [ "$T_NOW" -lt $((DISP_GUARD_TEMP - HYST)) ]; then
+      DISP_CLEAR_N=$((DISP_CLEAR_N + 1))
+      if [ "$DISP_CLEAR_N" -ge 2 ]; then
+        DISP_HOT_ON=0; DISP_CLEAR_N=0
+        log "机身 ${T_NOW} 低于 $((DISP_GUARD_TEMP - HYST))，防掉帧保护解除，恢复性能状态"
+        return 1
+      fi
+    else
+      DISP_CLEAR_N=0
+    fi
+    return 0
+  fi
+  if [ "$T_NOW" -ge "$DISP_GUARD_TEMP" ]; then
+    DISP_HOT_ON=1; DISP_CLEAR_N=0
+    log "机身 ${T_NOW} 达到防掉帧触发线 ${DISP_GUARD_TEMP}，整体降频加速降温"
+    return 0
+  fi
+  return 1
+}
+
+# ---- ③ GPU 实验上限 ----
+gpu_cap_wanted() { case "$GAME_GPU_CAP" in ''|off) return 1 ;; esac; return 0; }
+
+# 可用档列表里的最高档 = 本机出厂 GPU 上限（还原兜底用）
+gpu_avail_max() {
+  GPU_AVAIL_MAX=""
+  local f v m=""
+  read -r f 2>/dev/null <"$GPU_AVAIL" || return 1
+  for v in $f; do
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "$m" ] || [ "$v" -gt "$m" ]; then m=$v; fi
+  done
+  [ -n "$m" ] || return 1
+  GPU_AVAIL_MAX=$m
+}
+
+# 写入规则（只降不升、不锁只读、不跟温控抢）：
+#   当前值 < 目标档 → 厂商温控正压着，让行不动（0 = 不视为失败）
+#   当前值 = 目标档 → 已在位
+#   当前值 > 目标档 → 写入并回读；回读不符 → 撤事务如实报错，绝不硬顶
+gpu_apply_cap() {
+  gpu_cap_wanted || return 0
+  [ -e "$GPU_MAXF" ] || return 1
+  local f="" cur=""
+  read -r f 2>/dev/null <"$GPU_AVAIL"
+  case " $f " in *" $GAME_GPU_CAP "*) ;; *)
+    smart_fail "GPU 档 $GAME_GPU_CAP 不在本机可用档列表，拒绝写入"
+    return 1 ;; esac
+  read -r cur 2>/dev/null <"$GPU_MAXF"
+  case "$cur" in ''|*[!0-9]*) cur="" ;; esac
+  [ "$cur" = "$GAME_GPU_CAP" ] && return 0
+  if [ -n "$cur" ] && [ "$cur" -lt "$GAME_GPU_CAP" ]; then return 0; fi
+  if [ ! -s "$GPU_BAK" ]; then
+    local orig=$cur
+    [ -n "$orig" ] || { gpu_avail_max && orig=$GPU_AVAIL_MAX; }
+    case "$orig" in ''|*[!0-9]*) orig="" ;; esac
+    if [ -n "$orig" ] && [ "$orig" -gt "$GAME_GPU_CAP" ]; then
+      mkdir -p "$DATA" 2>/dev/null
+      printf '%s' "$orig" >"$GPU_BAK" 2>/dev/null
+    fi
+  fi
+  mkdir -p "$DATA" 2>/dev/null
+  printf 'gpu\n' >"$GPU_TXN.tmp" 2>/dev/null && mv -f "$GPU_TXN.tmp" "$GPU_TXN" 2>/dev/null
+  if ! printf '%s' "$GAME_GPU_CAP" >"$GPU_MAXF" 2>/dev/null; then
+    rm -f "$GPU_TXN" 2>/dev/null
+    return 1
+  fi
+  local got=""
+  read -r got 2>/dev/null <"$GPU_MAXF"
+  if [ "$got" != "$GAME_GPU_CAP" ]; then
+    rm -f "$GPU_TXN" 2>/dev/null
+    smart_fail "GPU 上限写入未生效（回读 ${got:-空}），本机不支持该实验"
+    return 1
+  fi
+  : >"$GPU_ON" 2>/dev/null
+  return 0
+}
+
+# 还原：只在"当前值仍是我们写的目标档"时写回出厂上限；
+# 厂商温控压得更低时留给它自己恢复（写回高值会对抗保护）。
+gpu_restore_cap() {
+  local cur="" bak=""
+  if [ -f "$GPU_TXN" ] && [ ! -f "$GPU_ON" ]; then rm -f "$GPU_TXN"; fi
+  [ -f "$GPU_ON" ] || return 0
+  read -r cur 2>/dev/null <"$GPU_MAXF"
+  case "$cur" in ''|*[!0-9]*) cur="" ;; esac
+  [ -s "$GPU_BAK" ] && { read -r bak 2>/dev/null <"$GPU_BAK"; }
+  case "$bak" in ''|*[!0-9]*) bak="" ;; esac
+  [ -n "$bak" ] || { gpu_avail_max && bak=$GPU_AVAIL_MAX; }
+  if [ -n "$cur" ] && [ -n "$bak" ] && [ "$cur" = "$GAME_GPU_CAP" ]; then
+    printf '%s' "$bak" >"$GPU_MAXF" 2>/dev/null
+  fi
+  rm -f "$GPU_ON" "$GPU_TXN"
+  return 0
+}
 
 # ==== 天玑（联发科）分支 ====
 # 天玑没有 msm_performance 节点，出厂/厂商把频率钉在本机 policy 上：
@@ -541,6 +781,7 @@ restore_performance() {
       fi ;;
   esac
   if [ -f "$GAME_ON" ]; then disable_game || rc=1; fi
+  gpu_restore_cap || rc=1
   return "$rc"
 }
 
@@ -551,10 +792,13 @@ restore_all_owned() {
   return "$rc"
 }
 
-# 本模块这层是否在位。高通看集中节点、天玑看各 policy。
+# 本模块这层是否在位。高通看集中节点（完整解锁或稳健档都算在位）、天玑看各 policy。
 # 注意：这 != "实际已满频"，仍要给用户看 CAPPED。
 layer_on() {
-  case "$PLATFORM" in mtk) mtk_unlocked ;; *) is_unlocked && node_readonly ;; esac
+  case "$PLATFORM" in
+    mtk) mtk_unlocked ;;
+    *) sweet_string; is_unlocked && node_readonly || { sweet_on && node_readonly; } ;;
+  esac
 }
 
 # 只读锁是否在位（用权限位字符串判断，不依赖 -w —— root 下 -w 不可靠）
@@ -1075,6 +1319,17 @@ why_state() {
   if is_hot; then
     echo "过热保护中 · $wn $(mC "$t")，降到 $(mC $((EFF_TEMP - HYST))) 以下恢复"; return
   fi
+  # 防掉帧：接近屏幕降档红线，已整体降频加速降温
+  if [ "$DISP_GUARD" = 1 ] && [ -n "$t" ] && [ "$t" -ge "$DISP_GUARD_TEMP" ] 2>/dev/null; then
+    echo "机身 $(mC "$t") 接近屏幕降档线（掉帧/变暗），已整体降频加速降温"; return
+  fi
+  # GPU 过热降频（只在高通且有 kgsl 温度时才有意义）
+  if [ "$GPU_GUARD" = 1 ]; then
+    read_gpu_temp
+    if [ -n "$GPU_T" ] && [ "$GPU_T" -ge "$GPU_GUARD_TEMP" ]; then
+      echo "GPU $(mC "$GPU_T") 过热（触发线 $(mC "$GPU_GUARD_TEMP")），已降大核频率"; return
+    fi
+  fi
   # 只有「本应满频」时，才把实际情况（含被别的链路压着）报出来。
   # 文案里的数字要和 status 的 CAP_FREQ 一致（同一个 $cap，来自同一次采样）。
   if [ "$want" = 1 ]; then
@@ -1125,7 +1380,9 @@ load_smart_profiles() {
   if [ "$key" = "$DAILY_PROFILE_KEY" ]; then return "$DAILY_PROFILE_RESULT"; fi
   DAILY_PROFILE_KEY=$key; DAILY_PROFILE_RESULT=1; DAILY_SPEC=""
   [ -f "$SMART_PROFILES" ] || return 1
-  model=${DAILY_DEVICE_KEY%%|*}; rom=${DAILY_DEVICE_KEY#*|}; rom=${rom%|*}
+  # ★ mksh 兼容：未加引号的 | 在参数展开模式里被 mksh 解析坏（实测 ${K%%|*} 返回空），
+  #   必须给模式里的竖线加引号。这个 bug 让所有机型的日常档位匹配静默失败。
+  model=${DAILY_DEVICE_KEY%%'|'*}; rom=${DAILY_DEVICE_KEY#*'|'}; rom=${rom%'|'*}
   while IFS='|' read -r pm pr pp spec; do
     case "$pm" in ''|\#*) continue ;; esac
     spec=${spec%"$CR"}
@@ -1275,7 +1532,11 @@ apply_daily_qcom() {
   daily_write_txn || return 1
   chmod 644 "$FREQ" 2>/dev/null || { restore_daily; return 1; }
   printf '%s' "$DAILY_PLAN" >"$FREQ" 2>/dev/null || { restore_daily; return 1; }
-  chmod 644 "$FREQ" 2>/dev/null || { restore_daily; return 1; }
+  # ★ 锁 444 防 OMRG 抢写：实测不锁时 oplus-omrg 内核线程 4~6 秒就把节点改回
+  #   出厂调度值（2016000/2803200/2841600），verify 失败 → daily_conflict。
+  #   日常档的语义就是"压制"，锁住低档与 PERF 解锁锁住高档是同一套防抢写机制。
+  #   进游戏走 restore_daily（先解锁再还原）→ enter_performance 写满频，无冲突。
+  chmod 444 "$FREQ" 2>/dev/null || { restore_daily; return 1; }
   verify_daily_qcom || { restore_daily; return 1; }
   printf '%s\n' "$DAILY_PLAN" >"$DAILY_ON.tmp" 2>/dev/null && mv -f "$DAILY_ON.tmp" "$DAILY_ON" 2>/dev/null || { restore_daily; return 1; }
   rm -f "$DAILY_TXN"
@@ -1355,6 +1616,7 @@ restore_daily() {
     *)
       [ -s "$DAILY_BAK" ] || return 1
       orig=$(cat "$DAILY_BAK" 2>/dev/null)
+      # 日常档在位时节点是 444 只读锁，必须先解锁才能写原值；写完保持 644 交还系统。
       chmod 644 "$FREQ" 2>/dev/null || rc=1
       printf '%s' "$orig" >"$FREQ" 2>/dev/null || rc=1
       chmod 644 "$FREQ" 2>/dev/null || rc=1 ;;
@@ -1790,6 +2052,17 @@ smart_decide() {
   fi
   if [ "$SMART_WANT" = 1 ]; then
     DAILY_SINCE=""
+    # 过热降频：GPU 与防掉帧两路信号独立滞回，任一命中进 GPU_HOT。
+    # 只挂在游戏前台分支里 —— 没游戏时不存在"降频让热"。
+    local gpu_hit=0 disp_hit=0
+    update_gpu_hot && gpu_hit=1
+    update_disp_hot && disp_hit=1
+    if [ "$gpu_hit" = 1 ] || [ "$disp_hit" = 1 ]; then
+      SMART_STATE=GPU_HOT
+      if [ "$disp_hit" = 1 ]; then SMART_REASON=disp_hot_yield
+      else SMART_REASON=gpu_hot_yield; fi
+      return
+    fi
     SMART_STATE=PERF; SMART_REASON=scope_active
     return
   fi
@@ -1865,22 +2138,42 @@ enter_performance() {
       fi
       mtk_unlocked && PERF_VERIFIED=1 ;;
     *)
-      if ! is_unlocked || ! node_readonly; then
-        ensure_backup
-        if ! unlock_freq; then
-          smart_fail "高通频率解除写入或回读失败，保持中立"
-          restore_freq
-          return 1
+      if [ "$GAME_CPU_SWEET" = hw ] && sweet_string; then
+        # 稳健档：同一节点写"每核硬件原生上限"，省出大核尾部热（3187→2803 一类）。
+        if ! sweet_on || ! node_readonly; then
+          ensure_backup
+          if ! unlock_sweet; then
+            smart_fail "大核稳健档写入或回读失败，保持中立"
+            restore_freq
+            return 1
+          fi
+          if ! : >"$QCOM_ON" 2>/dev/null; then
+            restore_freq
+            smart_fail "高通所有权标记创建失败，已尝试恢复频率"
+            return 1
+          fi
+          rm -f "$QCOM_TXN"
+          log "解锁（稳健档 · ${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
         fi
-        if ! : >"$QCOM_ON" 2>/dev/null; then
-          restore_freq
-          smart_fail "高通所有权标记创建失败，已尝试恢复频率"
-          return 1
+        sweet_on && node_readonly && PERF_VERIFIED=1
+      else
+        if ! is_unlocked || ! node_readonly; then
+          ensure_backup
+          if ! unlock_freq; then
+            smart_fail "高通频率解除写入或回读失败，保持中立"
+            restore_freq
+            return 1
+          fi
+          if ! : >"$QCOM_ON" 2>/dev/null; then
+            restore_freq
+            smart_fail "高通所有权标记创建失败，已尝试恢复频率"
+            return 1
+          fi
+          rm -f "$QCOM_TXN"
+          log "解锁（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
         fi
-        rm -f "$QCOM_TXN"
-        log "解锁（${ZONE_USED:-$ZONE} ${t} 阈值 ${EFF_TEMP:-${TEMP:-55000}} 模式 $MODE${GAME_LAST:+ 游戏 $GAME_LAST}）"
-      fi
-      is_unlocked && node_readonly && PERF_VERIFIED=1 ;;
+        is_unlocked && node_readonly && PERF_VERIFIED=1
+      fi ;;
   esac
   if ! game_opt_ok; then
     if enable_game && game_opt_ok; then
@@ -1888,6 +2181,12 @@ enter_performance() {
     else
       smart_fail "游戏场景上限开关不可用（频率层状态单独保留）"
     fi
+  fi
+  # GPU 实验上限：只降不升；配置改回 off 时也要在这里收回
+  if gpu_cap_wanted; then
+    gpu_apply_cap || true
+  else
+    gpu_restore_cap || true
   fi
   AFFINITY_VERIFIED=0
   if [ "$AFFINITY_ENABLE" = 1 ] && type apply_configured_affinity >/dev/null 2>&1; then
@@ -1899,6 +2198,47 @@ enter_performance() {
 enter_neutral() {
   restore_all_owned || smart_fail "部分资源恢复失败，将在下次 tick/ensure 重试"
   PERF_VERIFIED=0; DAILY_VERIFIED=0; AFFINITY_VERIFIED=0
+  return 0
+}
+
+enter_gpu_yield() {
+  # 过热降频。显示红线命中 → 整体降频，不折中：60Hz/限亮直接锁死帧率与观感，
+  # 只有最快降温才能把显示温度拉回恢复线（实测 46°C 自动回 90Hz），稳健档省的热不够快。
+  if [ "$DISP_HOT_ON" = 1 ]; then
+    enter_neutral
+    return $?
+  fi
+  # GPU 过热保护：GPU 到触发线，把大核尾部热让给 GPU。
+  # action=neutral → 整体降频（更保守）；sweet 不可用时同样退化为整体降频。
+  if [ "$GPU_GUARD_ACTION" = neutral ]; then
+    enter_neutral
+    return $?
+  fi
+  if [ "$GAME_CPU_SWEET" = hw ]; then
+    # 静态稳健档已把大核钉在硬件上限，降频无更低档可落，保持现状
+    return 0
+  fi
+  if ! sweet_string; then
+    smart_fail "大核稳健档不可用（读不全硬件上限），GPU 过热保护改为整体降频"
+    enter_neutral
+    return $?
+  fi
+  if ! sweet_on || ! node_readonly; then
+    ensure_backup
+    if ! unlock_sweet; then
+      smart_fail "GPU 过热降大核频率失败，改为整体降频"
+      enter_neutral
+      return $?
+    fi
+    if ! : >"$QCOM_ON" 2>/dev/null; then
+      smart_fail "高通所有权标记创建失败，GPU 过热保护未完成"
+      return 1
+    fi
+    rm -f "$QCOM_TXN"
+    log "GPU $(mC "$GPU_T") 过热：大核落稳健档（触发线 $(mC "$GPU_GUARD_TEMP")）"
+  fi
+  # 降频是刻意降性能换 GPU 不降档：如实标 0，游戏记录的满频占比才会反映降频时长。
+  PERF_VERIFIED=0
   return 0
 }
 
@@ -1929,6 +2269,7 @@ enter_daily() {
 smart_transition() {
   case "$SMART_STATE" in
     PERF) enter_performance ;;
+    GPU_HOT) enter_gpu_yield ;;
     DAILY) enter_daily ;;
     HOT|SENSOR_FAULT|NEUTRAL) enter_neutral ;;
     *) SMART_STATE=NEUTRAL; SMART_REASON=unknown_state; enter_neutral ;;
@@ -1939,6 +2280,7 @@ smart_transition() {
 tick() {
   LAST_ERROR=""
   read_temp
+  read_gpu_temp
   smart_decide
   smart_transition
   smart_publish
@@ -2031,6 +2373,8 @@ daemon() {
   trap 'daemon_cleanup; exit 0' TERM INT HUP
   SMART_STATE=NEUTRAL; SMART_REASON=starting
   DAILY_SINCE=""; HOT_CLEAR_N=0; SENSOR_CLEAR_N=0
+  GPU_T=""; GPU_HOT_ON=0; GPU_CLEAR_N=0
+  DISP_HOT_ON=0; DISP_CLEAR_N=0
   LASTCONF=$(conf_sig)
   CTRL_PID=$MY
   CTRL_START=$(proc_starttime "$MY")
@@ -2043,6 +2387,9 @@ daemon() {
     if [ "$sig" != "$LASTCONF" ]; then
       ENABLE=1; TEMP=55000; TEMP_CPU=80000; ZONE=skin-msm-therm; MODE=game; HYST=3000
       SMART_ENABLE=0; DAILY_PROFILE=auto; AFFINITY_ENABLE=0
+      GAME_CPU_SWEET=off; GPU_GUARD=off; GPU_GUARD_TEMP=60000
+      GPU_GUARD_ACTION=sweet; GAME_GPU_CAP=off
+      DISP_GUARD=off; DISP_GUARD_TEMP=51500
       load_conf
       if [ "$ENABLE" != "1" ]; then
         restore_all_owned; rm -f "$HOT_FLAG"
@@ -2072,7 +2419,7 @@ cmd_status() {
   #（高通 = 节点是解锁值且只读锁在；天玑 = 各 policy 上限已放开、governor 已换）。
   # WebUI 以前用「当前上限里有没有 9999999」猜，天玑没有这个节点，猜不出来。
   echo "PLATFORM=$PLATFORM"
-  echo "配置：ENABLE=$ENABLE TEMP=${TEMP}/TEMP_CPU=${TEMP_CPU} ZONE=$ZONE MODE=$MODE HYST=$HYST SMART_ENABLE=$SMART_ENABLE DAILY_PROFILE=$DAILY_PROFILE AFFINITY_ENABLE=$AFFINITY_ENABLE"
+  echo "配置：ENABLE=$ENABLE TEMP=${TEMP}/TEMP_CPU=${TEMP_CPU} ZONE=$ZONE MODE=$MODE HYST=$HYST SMART_ENABLE=$SMART_ENABLE DAILY_PROFILE=$DAILY_PROFILE AFFINITY_ENABLE=$AFFINITY_ENABLE GAME_CPU_SWEET=$GAME_CPU_SWEET GPU_GUARD=$GPU_GUARD GPU_GUARD_TEMP=$GPU_GUARD_TEMP GPU_GUARD_ACTION=$GPU_GUARD_ACTION DISP_GUARD=$DISP_GUARD DISP_GUARD_TEMP=$DISP_GUARD_TEMP GAME_GPU_CAP=$GAME_GPU_CAP"
   if is_alive && [ -f "$SMART_STATE_FILE" ]; then
     cat "$SMART_STATE_FILE"
   else
@@ -2099,6 +2446,9 @@ cmd_status() {
          echo "出厂备份：$(orig_value)" ;;
   esac
   echo "游戏上限：$(cat ${GAME_OPT}/cpu_max_freq 2>/dev/null || echo '—')  [disable_cpufreq_limit=$(cat "$GAMEDIS" 2>/dev/null)]"
+  if [ -r "$GPU_TEMPF" ]; then
+    echo "GPU：温度 $(cat "$GPU_TEMPF" 2>/dev/null) 上限 $(cat "$GPU_MAXF" 2>/dev/null) 热档 $(cat "$GPU_PWL" 2>/dev/null)$( [ -f "$GPU_ON" ] && echo ' 实验上限=持有中')"
+  fi
   echo
   echo "当前频率（上限 / 实际 / 硬件上限）："
   # 按实际存在的 policy 列出（取每个 policy 的第一个 CPU 做标签），
@@ -2204,7 +2554,7 @@ cmd_apply() {
 cmd_ensure() {
   load_conf
   if [ "$ENABLE" != "1" ]; then
-    if is_alive || [ -f "$MTK_ON" ] || [ -f "$MTK_TXN" ] || [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ] || [ -f "$DAILY_ON" ] || [ -f "$DAILY_TXN" ] || [ -f "$AFF_TXN" ] || [ -f "$GAME_ON" ] || is_unlocked; then
+    if is_alive || [ -f "$MTK_ON" ] || [ -f "$MTK_TXN" ] || [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ] || [ -f "$DAILY_ON" ] || [ -f "$DAILY_TXN" ] || [ -f "$AFF_TXN" ] || [ -f "$GAME_ON" ] || [ -f "$GPU_ON" ] || [ -f "$GPU_TXN" ] || is_unlocked; then
       stop_daemon
       restore_all_owned
       rm -f "$HOT_FLAG"

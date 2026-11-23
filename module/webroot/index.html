@@ -210,6 +210,12 @@
   .memlabel b{font-size:19px;color:var(--accent)}
   .memnote{font-size:11.5px;color:var(--muted);margin-top:3px}
   .membar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:9px 0 11px}
+  .cpubar{height:5px;border-radius:3px;background:var(--chip);overflow:hidden;margin:3px 0 0;position:relative}
+  .cpubar i{display:block;height:100%;border-radius:3px;width:0;transition:width .4s ease}
+  .cpubar i.cap{background:linear-gradient(90deg,var(--ok) 0%,var(--ok) 85%,color-mix(in srgb,var(--ok) 70%,#fff) 100%)}
+  .cpubar i.cap.warn{background:linear-gradient(90deg,var(--warn) 0%,var(--warn) 85%,color-mix(in srgb,var(--warn) 70%,#fff) 100%)}
+  .cpubar i.cur{background:linear-gradient(90deg,color-mix(in srgb,var(--ok) 55%,var(--chip)) 0%,var(--ok) 100%)}
+  .cpubar::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 calc(25% - 1px),color-mix(in srgb,var(--text) 14%,transparent) calc(25% - 1px) 25%);pointer-events:none}
   .membar i{display:block;height:100%;background:var(--ok);width:0;transition:width .3s}
   .membar i.warn{background:var(--warn)} .membar i.bad{background:var(--danger)}
   .grid4{display:grid;grid-template-columns:1fr 1fr;gap:7px}
@@ -341,13 +347,46 @@
     <div class="row" style="cursor:default">
       <div class="body">
         <div class="name">智能调和 <span class="tag" id="cpulSmartTag">关闭</span></div>
-        <div class="desc" id="cpulSmartDesc">在「仅游戏」前台性能和日常系统调度之间自动切换。日常降顶只使用已验证机型档位；线程 affinity 只应用显式规则，不会自动猜关键线程。</div>
+        <div class="desc" id="cpulSmartDesc">在「仅游戏」前台性能和日常系统调度之间自动切换。有适配档位时，日常可限制 CPU 最高频率；线程优化只使用你确认的规则，不会自动猜关键线程。</div>
         <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
           <button class="tab" id="cpulSmartToggle" style="padding:8px 12px">智能调和：关</button>
           <button class="tab" id="cpulDailyToggle" style="padding:8px 12px">日常降顶：自动</button>
           <button class="tab" id="cpulAffinityToggle" style="padding:8px 12px">线程 affinity：关</button>
         </div>
         <div class="desc" style="margin-top:6px" id="cpulSmartInfo">线程规则：先用 cpulimit.sh observe [包名] 只读观测，再写数据目录 smartsched.rules；没有规则不会扫描或修改线程。</div>
+      </div>
+    </div>
+    <div class="row" style="cursor:default">
+      <div class="body">
+        <div class="name">游戏热预算 <span class="tag" id="cpulHeatTag">实验 · 全关</span></div>
+        <div class="desc" id="cpulHeatDesc">游戏掉帧+变暗，多是整机过热后<b>屏幕被系统强制降刷新率/降亮度</b>（触发温度各机型不同，和手感烫不烫没关系）。这里的思路是把大核的热降下来换屏幕不降档，不是继续加频率。按游戏类型点下面的预设就行。</div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab" id="cpulPresetGpu" style="padding:8px 12px">GPU 型游戏（推荐）</button>
+          <button class="tab" id="cpulPresetOff" style="padding:8px 12px">关闭（CPU 型游戏）</button>
+        </div>
+        <div class="desc" style="margin-top:6px" id="cpulPresetHint"><b>怎么选：</b>吃鸡、王者、CODM 这类射击/MOBA/多数手游是 GPU 型——帧率吃 GPU，大核降点频率不伤帧（实测吃鸡：掉帧窗口 -91%，1% Low 从 60 提到 84）。原神等开放世界、重计算游戏是 CPU 型——帧率吃大核频率，<b>降频会直接掉帧，选关闭</b>。拿不准就先关，用「游戏记录」对比几局再说。</div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:8px 0 0">
+          <button class="tab" id="cpulSweetToggle" style="padding:8px 12px">大核：满频</button>
+          <button class="tab" id="cpulGuardToggle" style="padding:8px 12px">GPU 过热保护：关</button>
+          <button class="tab" id="cpulDispToggle" style="padding:8px 12px">防掉帧变暗：关</button>
+          <button class="tab" id="cpulGpuActionToggle" style="padding:8px 12px">GPU 过热动作：稳健档</button>
+        </div>
+        <div class="mini" style="display:flex;gap:8px;align-items:center;border:none;padding:8px 0 0">
+          <span style="flex:0 0 auto">GPU 触发温度</span>
+          <input type="range" id="cpulGuardTemp" min="50000" max="65000" step="500" value="60000" style="flex:1 1 auto">
+          <span class="mini" style="border:none;padding:0;flex:0 0 54px;text-align:right" id="cpulGuardTempVal">60.0°C</span>
+        </div>
+        <div class="mini" style="display:flex;gap:8px;align-items:center;border:none;padding:4px 0 0">
+          <span style="flex:0 0 auto">防掉帧触发温度</span>
+          <input type="range" id="cpulDispTemp" min="48000" max="58000" step="500" value="51500" style="flex:1 1 auto">
+          <span class="mini" style="border:none;padding:0;flex:0 0 54px;text-align:right" id="cpulDispTempVal">51.5°C</span>
+        </div>
+        <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border:none;padding:4px 0 0">
+          <button class="tab" id="cpulCapOff" style="padding:8px 12px">GPU 上限实验：关</button>
+          <button class="tab" id="cpulCap615" style="padding:8px 12px">615MHz</button>
+          <button class="tab" id="cpulCap680" style="padding:8px 12px">680MHz</button>
+        </div>
+        <div class="desc" style="margin-top:6px" id="cpulHeatInfo">大核稳健档=游戏时大核只用第二高档（如 3187MHz→2726MHz），帧率几乎不掉、发热明显降低；GPU 过热保护=GPU 到触发温度就降大核；防掉帧变暗=机身到触发温度就整体降频，赶在屏幕被降刷新率/变暗之前降温；GPU 过热动作=触发时大核落稳健档，或「整体降频」（大中小核全部回到出厂上限，降温最快、性能降得也多）；GPU 上限=只降不升、不与温控抢写。收益需逐机实测。</div>
       </div>
     </div>
     <div class="mini" style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)">
@@ -1521,7 +1560,7 @@ async function reset() {
 
 
 /* ---------- 内存 / CPU 面板 ---------- */
-let memDetail = { A: [], C: [] };
+let memDetail = { A: [], C: [], R: [] };
 let memTab = "A";
 let memLoaded = false;
 
@@ -1590,7 +1629,7 @@ async function loadMemOverview() {
   document.getElementById("memLoad").textContent =
     (o.LOAD || "?").split(" ")[0] + " / " + (o.CPUBUSY || "?");
   { const e=$("memHint"); if(e) e.textContent =
-    "CPU " + (o.GEAR ? o.GEAR.split(" ").map(v => (v / 1000).toFixed(0) + "M").join(" / ") : "?") ; }
+    "CPU " + (o.GEAR ? o.GEAR.split(" ").map(v => (v / 1000).toFixed(0) + "MHz").join(" / ") : "?") ; }
   document.getElementById("memNote").textContent =
     o.ZRAM_MB > 1500
       ? "zram 占用偏高（" + o.ZRAM_MB + "MB），说明后台被换出得较多，可清理一次。"
@@ -1608,11 +1647,14 @@ async function loadMemDetail() {
   await paint();
   const r = await exec('sh "' + MODDIR + '/mem.sh" list');
   const lines = (r.stdout || "").split("\n");
-  memDetail = { A: [], C: [] };
+  memDetail = { A: [], C: [], R: [] };
   for (const ln of lines) {
     const p = ln.split("|");
     if (p[0] === "A" && p.length >= 5) memDetail.A.push({ k: p[1], v: +p[2], adj: +p[3], n: +p[4] });
     else if (p[0] === "C" && p.length >= 5) memDetail.C.push({ k: p[1], v: +p[2], n: +p[4] });
+    // R|pid|cmdline|cpu千分比 —— root 脚本进程（破解工具/后台脚本常驻烧 CPU 的元凶）。
+    // cmdline 含路径含竖线风险小，但 join 安全起见按分隔符还原。
+    else if (p[0] === "R" && p.length >= 4) memDetail.R.push({ pid: p[1], k: p.slice(2, -1).join("|"), v: +p[3] });
   }
   memLoaded = true;
   renderDetail();
@@ -1673,6 +1715,44 @@ function renderDetail() {
     }
     host.appendChild(row);
   }
+  // root 脚本进程区（R 类）：破解工具/后台脚本 —— 不在 Android 应用框架里，
+  // 一键清理（am kill-all）与 force-stop 都管不到，高 CPU 常驻是"莫名发烫"的常见元凶。
+  if (memTab === "A" && memDetail.R && memDetail.R.length) {
+    const hd = document.createElement("div");
+    hd.className = "memlabel";
+    hd.style.cssText = "margin:12px 0 2px;font-size:13px";
+    hd.textContent = "脚本/工具进程（" + memDetail.R.length + "）· 系统后台管理不到";
+    const tip = document.createElement("div");
+    tip.className = "ps";
+    tip.style.cssText = "color:var(--warn);font-size:11px;margin:2px 0 6px";
+    tip.textContent = "root 启动的脚本或破解工具会绕过一键清理；高 CPU 常驻 = 发烫元凶，可直接停止";
+    host.appendChild(hd); host.appendChild(tip);
+    for (const it of memDetail.R) {
+      const row = document.createElement("div");
+      row.className = "prow";
+      const b = document.createElement("div");
+      b.className = "pb";
+      b.innerHTML = '<div class="pn" style="font-size:12px;word-break:break-all">' + esc(it.k) + '</div>' +
+        '<div class="ps">PID ' + esc(it.pid) + ' · 脚本进程</div>';
+      const v = document.createElement("div");
+      v.className = "pv";
+      v.textContent = (it.v / 10).toFixed(1) + "%";
+      v.style.color = it.v >= 500 ? "var(--warn)" : "";
+      const btn = document.createElement("button");
+      btn.className = "sbtn";
+      btn.textContent = "停止";
+      btn.addEventListener("click", async () => {
+        if (!confirm("停止脚本进程 PID " + it.pid + "？\n\n" + it.k)) return;
+        btn.disabled = true; btn.textContent = "…";
+        const r = await exec('sh "' + MODDIR + '/mem.sh" killpid ' + it.pid);
+        await loadMemDetail();
+        await loadMemOverview();
+        toast((r.stdout || "").trim() || "已停止");
+      });
+      row.appendChild(b); row.appendChild(v); row.appendChild(btn);
+      host.appendChild(row);
+    }
+  }
 }
 
 async function memClean() {
@@ -1701,8 +1781,19 @@ async function memClean() {
 /* ---------- CPU 上限解除 ---------- */
 let cpulLoaded = false, cpulConf = {}, cpulApplied = 0, cpulOrigTemp = 55000, cpulMode = "game";
 let cpulSmartEnable = 0, cpulDailyProfile = "auto", cpulAffinityEnable = 0, cpulStatusRaw = "", cpulApplyPending = false;
+// 游戏热预算（实验，v01.7.75）：大核稳健档 / GPU 过热保护 / 防掉帧变暗 / GPU 实验上限
+let cpulSweet = 0, cpulGuard = 0, cpulGuardTemp = 60000, cpulCap = "off";
+let cpulDispGuard = 0, cpulDispGuardTemp = 51500;
+let cpulGpuAction = "sweet";
+// 滑杆当前值缓存（input 事件维护；dirty 判断读它，不读 DOM 避免强制布局）
+let cpulTempVal = 55000, cpulTempCpuVal = 80000;
 
+let cpulSmartSyncedSig = "";
 function cpulSyncSmart() {
+  const sig = [cpulSmartEnable, cpulDailyProfile, cpulAffinityEnable, cpulApplyPending,
+    cpulConf.SMART_ENABLE, cpulConf.DAILY_PROFILE, cpulConf.AFFINITY_ENABLE].join("|");
+  if (sig === cpulSmartSyncedSig) return;
+  cpulSmartSyncedSig = sig;
   const smart = document.getElementById("cpulSmartToggle");
   const daily = document.getElementById("cpulDailyToggle");
   const aff = document.getElementById("cpulAffinityToggle");
@@ -1724,6 +1815,82 @@ function cpulSyncSmart() {
       || cpulDailyProfile !== (cpulConf.DAILY_PROFILE === "off" ? "off" : "auto")
       || cpulAffinityEnable !== (cpulConf.AFFINITY_ENABLE === "1" ? 1 : 0);
     tag.textContent = cpulApplyPending ? "待应用" : (dirty ? "待保存" : (cpulSmartEnable ? "已开启" : "关闭"));
+  }
+  cpulSyncHeat();
+}
+
+// 游戏热预算开关的按钮/标签同步；dirty 判断与序列化共用同一套归一化。
+function cpulHeatNorm() {
+  return {
+    sweet: cpulConf.GAME_CPU_SWEET === "hw" ? 1 : 0,
+    guard: cpulConf.GPU_GUARD === "1" ? 1 : 0,
+    guardTemp: parseInt(cpulConf.GPU_GUARD_TEMP || "60000", 10) || 60000,
+    dispGuard: cpulConf.DISP_GUARD === "1" ? 1 : 0,
+    dispGuardTemp: parseInt(cpulConf.DISP_GUARD_TEMP || "51500", 10) || 51500,
+    cap: (cpulConf.GAME_GPU_CAP === "615000000" || cpulConf.GAME_GPU_CAP === "680000000")
+      ? cpulConf.GAME_GPU_CAP : "off",
+    gpuAction: (cpulConf.GPU_GUARD_ACTION === "neutral") ? "neutral" : "sweet",
+  };
+}
+let cpulHeatSyncedSig = "";
+function cpulSyncHeat() {
+  // 脏检查：热预算相关状态没变就跳过整段 DOM 重刷。
+  // 点「智能调和」等无关开关时不再连带重刷热预算 8 个控件（点击卡顿的主源）。
+  const sig = [cpulSweet, cpulGuard, cpulGuardTemp, cpulDispGuard, cpulDispGuardTemp,
+    cpulCap, cpulGpuAction, cpulApplyPending, cpulConf.GAME_CPU_SWEET, cpulConf.GPU_GUARD,
+    cpulConf.GPU_GUARD_TEMP, cpulConf.GPU_GUARD_ACTION, cpulConf.DISP_GUARD,
+    cpulConf.DISP_GUARD_TEMP, cpulConf.GAME_GPU_CAP].join("|");
+  if (sig === cpulHeatSyncedSig) return;
+  cpulHeatSyncedSig = sig;
+  const sweet = document.getElementById("cpulSweetToggle");
+  const guard = document.getElementById("cpulGuardToggle");
+  if (sweet) {
+    sweet.textContent = "大核：" + (cpulSweet ? "稳健档" : "满频");
+    sweet.className = "tab" + (cpulSweet ? " on" : "");
+  }
+  if (guard) {
+    guard.textContent = "GPU 过热保护：" + (cpulGuard ? "开" : "关");
+    guard.className = "tab" + (cpulGuard ? " on" : "");
+  }
+  const slider = document.getElementById("cpulGuardTemp");
+  if (slider) {
+    slider.value = cpulGuardTemp;
+    document.getElementById("cpulGuardTempVal").textContent = (cpulGuardTemp / 1000).toFixed(1) + "°C";
+  }
+  const disp = document.getElementById("cpulDispToggle");
+  if (disp) {
+    disp.textContent = "防掉帧变暗：" + (cpulDispGuard ? "开" : "关");
+    disp.className = "tab" + (cpulDispGuard ? " on" : "");
+  }
+  const dslider = document.getElementById("cpulDispTemp");
+  if (dslider) {
+    dslider.value = cpulDispGuardTemp;
+    document.getElementById("cpulDispTempVal").textContent = (cpulDispGuardTemp / 1000).toFixed(1) + "°C";
+  }
+  const caps = { cpulCapOff: cpulCap === "off", cpulCap615: cpulCap === "615000000", cpulCap680: cpulCap === "680000000" };
+  for (const id in caps) {
+    const el = document.getElementById(id);
+    if (el) el.className = "tab" + (caps[id] ? " on" : "");
+  }
+  const act = document.getElementById("cpulGpuActionToggle");
+  if (act) {
+    act.textContent = "GPU 过热动作：" + (cpulGpuAction === "neutral" ? "整体降频" : "稳健档");
+    act.className = "tab" + (cpulGpuAction === "neutral" ? " on" : "");
+  }
+  // 预设高亮：GPU 型 = 稳健档+防掉帧变暗；关闭 = 全关。带高级项（GPU 过热/GPU 上限）不算纯净预设。
+  const pg = document.getElementById("cpulPresetGpu");
+  if (pg) pg.className = "tab" + (cpulSweet && cpulDispGuard && !cpulGuard && cpulCap === "off" ? " on" : "");
+  const po = document.getElementById("cpulPresetOff");
+  if (po) po.className = "tab" + (!cpulSweet && !cpulGuard && !cpulDispGuard && cpulCap === "off" ? " on" : "");
+  const tag = document.getElementById("cpulHeatTag");
+  if (tag) {
+    const n = cpulHeatNorm();
+    const dirty = cpulSweet !== n.sweet || cpulGuard !== n.guard
+      || cpulGuardTemp !== n.guardTemp || cpulCap !== n.cap
+      || cpulDispGuard !== n.dispGuard || cpulDispGuardTemp !== n.dispGuardTemp;
+    const any = cpulSweet || cpulGuard || cpulDispGuard || cpulCap !== "off";
+    tag.textContent = cpulApplyPending ? "实验 · 待应用"
+      : (dirty ? "实验 · 待保存" : (any ? "实验 · 已开启" : "实验 · 全关"));
   }
 }
 // 温区：auto = 交给脚本自动挑（首选 skin-msm-therm，没有就用 CPU 结温，再没有退外壳）
@@ -1754,7 +1921,7 @@ function cpulPickTab(onId, ids) {
   for (const id of ids) document.getElementById(id).className = "tab" + (id === onId ? " on" : "");
 }
 function cpulSyncPreset() {
-  const v = parseInt(document.getElementById("cpulTemp").value, 10);
+  const v = cpulTempVal;   // 用缓存，不读 DOM（滑杆拖动时每 tick 都会进这里）
   const ids = ["cpulPresetCool", "cpulPresetStd", "cpulPresetHot"];
   cpulPickTab(v === 50000 ? "cpulPresetCool" : (v === 55000 ? "cpulPresetStd" : (v === 60000 ? "cpulPresetHot" : "")), ids);
 }
@@ -1783,17 +1950,28 @@ async function loadCpul() {
   cpulSmartEnable = cfg.SMART_ENABLE === "1" ? 1 : 0;
   cpulDailyProfile = cfg.DAILY_PROFILE === "off" ? "off" : "auto";
   cpulAffinityEnable = cfg.AFFINITY_ENABLE === "1" ? 1 : 0;
+  // 游戏热预算：非法值一律回落安全默认（与脚本 load_conf 同一套规则）
+  cpulSweet = cfg.GAME_CPU_SWEET === "hw" ? 1 : 0;
+  cpulGuard = cfg.GPU_GUARD === "1" ? 1 : 0;
+  const gt = parseInt(cfg.GPU_GUARD_TEMP || "60000", 10);
+  cpulGuardTemp = (gt >= 50000 && gt <= 65000) ? gt : 60000;
+  cpulDispGuard = cfg.DISP_GUARD === "1" ? 1 : 0;
+  const dt = parseInt(cfg.DISP_GUARD_TEMP || "51500", 10);
+  cpulDispGuardTemp = (dt >= 48000 && dt <= 58000) ? dt : 51500;
+  cpulGpuAction = (cfg.GPU_GUARD_ACTION === "neutral") ? "neutral" : "sweet";
+  cpulCap = (cfg.GAME_GPU_CAP === "615000000" || cfg.GAME_GPU_CAP === "680000000")
+    ? cfg.GAME_GPU_CAP : "off";
   cpulSyncSmart();
   cpulMode = (cfg.MODE === "game" || cfg.MODE === "apps") ? cfg.MODE : "global";
   // 只有明确写了 skin-msm-therm 才算「指定机身」；shell_front 是旧配置里的无效选项，迁到自动
   cpulZone = cfg.ZONE === "skin-msm-therm" ? "skin-msm-therm" : "auto";
   cpulAppliedZone = cpulZone;
   const temp = parseInt(cfg.TEMP || "55000", 10);
-  cpulOrigTemp = temp; cpulApplied = temp;
+  cpulOrigTemp = temp; cpulApplied = temp; cpulTempVal = temp;
   document.getElementById("cpulTemp").value = temp;
   document.getElementById("cpulTempVal").textContent = (temp / 1000).toFixed(1) + "°C";
   cpulCpuTemp = parseInt(cfg.TEMP_CPU || "80000", 10);
-  cpulOrigCpuTemp = cpulCpuTemp; cpulAppliedCpuTemp = cpulCpuTemp;
+  cpulOrigCpuTemp = cpulCpuTemp; cpulAppliedCpuTemp = cpulCpuTemp; cpulTempCpuVal = cpulCpuTemp;
   document.getElementById("cpulTempCpu").value = cpulCpuTemp;
   document.getElementById("cpulTempCpuVal").textContent = (cpulCpuTemp / 1000).toFixed(1) + "°C";
   cpulSyncPreset(); cpulSyncZoneTab(); cpulSyncModeTab();
@@ -1833,12 +2011,31 @@ function renderCpul(st) {
       const d = document.createElement("div");
       d.setAttribute("data-cluster", "1");
       const k = document.createElement("div"); k.className = "k";
-      k.textContent = "簇" + (i + 1) + "·cpu" + o.cpu + " 上限/满频";
+      // 一格三行：上限（系统给的调度上限）/ 实频（此刻真在跑的）/ 硬件上限。
+      // ★ 上限≠实频：上限贴着硬件上限只说明"系统允许跑高"，实频才是真在跑的
+      //（浏览器前台时大核上限 89% 但实频只有 27%，旧格子只显示上限会被读成"满频"）。
+      k.textContent = "簇" + (i + 1) + "·cpu" + o.cpu + " 上限/实频/硬件";
       const v = document.createElement("div"); v.className = "v";
-      v.textContent = MHz(o.max) + " / " + MHz(o.hw) + "M";
-      // 被压（上限低于硬件上限）标黄，满频标绿
+      v.textContent = MHz(o.max) + " / " + MHz(o.cur) + " / " + MHz(o.hw) + " MHz";
+      // 上限顶到硬件上限=绿（系统允许满频）；上限被压=黄（想跑也跑不高）
       v.style.color = o.max >= o.hw ? "var(--ok)" : "var(--warn)";
+      // 双进度条：上限条（系统允许跑多高）+ 实频条（此刻真在跑多高）。
+      // 一眼区分"允许跑高"和"真在跑高"——浏览器前台时上限条 89% 但实频条只有 27%。
+      const mkbar = (pct, cls) => {
+        const b = document.createElement("div"); b.className = "cpubar";
+        const i = document.createElement("i");
+        i.className = cls;
+        i.style.width = Math.min(100, Math.max(0, pct)) + "%";
+        b.appendChild(i); return b;
+      };
+      const capPct = Math.round(o.max / o.hw * 100), curPct = Math.round(o.cur / o.hw * 100);
       d.appendChild(k); d.appendChild(v);
+      d.appendChild(mkbar(capPct, "cap" + (o.max < o.hw ? " warn" : "")));
+      d.appendChild(mkbar(curPct, "cur"));
+      const sub = document.createElement("div");
+      sub.className = "k"; sub.style.fontSize = "11px"; sub.style.marginTop = "2px";
+      sub.textContent = "上限 " + capPct + "% · 实频 " + curPct + "%";
+      d.appendChild(sub);
       // 插到温度格之前，保持「簇…簇 温度」的顺序
       const temp = document.getElementById("cpulTempReadK");
       grid.insertBefore(d, temp ? temp.parentNode : null);
@@ -1888,24 +2085,33 @@ function renderCpul(st) {
   } else if (smartState === "SENSOR_FAULT") {
     setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "温度传感器异常（已中立）";
     smartText = "读不到可信温度，禁止解除频率限制";
+  } else if (smartState === "GPU_HOT") {
+    setDot("cpulDot", "on");
+    if (smartReason === "disp_hot_yield") {
+      document.getElementById("cpulState").textContent = "防掉帧降频中";
+      smartText = "机身温度接近屏幕降档线（降刷新率/变暗），已整体降频加速降温";
+    } else {
+      document.getElementById("cpulState").textContent = "GPU 过热降频中";
+      smartText = "GPU 温度过热，大核已降频；降温后自动恢复";
+    }
   } else if (smartReason === "daily_conflict") {
     setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "日常档位冲突（保持系统值）";
     smartText = "检测到外部服务改写，不再反复抢写";
   } else if (smartState === "DAILY" && dailyVerified) {
-    setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "日常降顶（已验证）";
-    smartText = "非游戏状态，仅限制已验证的 CPU 最大频率";
+    setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = "日常降顶中";
+    smartText = "非游戏状态，正在限制 CPU 最高频率";
   } else if (smartState === "PERF" && !perfVerified && cpulSmartEnable) {
-    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "性能写入未验证";
-    smartText = smartError || "写入或回读失败，保持中立/重试";
+    setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "性能模式未生效";
+    smartText = smartError || "频率设置未能生效，保持系统调度并自动重试";
   } else if (unlocked && capped && shouldBeHot) {
     setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent = "中核/大核未满频";
   } else if (unlocked) {
     setDot("cpulDot", "on"); document.getElementById("cpulState").textContent = isMtk ? "已解除钉频" : "已满频";
   } else {
     setDot("cpulDot", "warn"); document.getElementById("cpulState").textContent =
-      smartReason === "no_verified_daily" ? "日常系统调度（无已验证降顶档位）" : (hint || "待命（条件未满足）");
+      smartReason === "no_verified_daily" ? "日常系统调度" : (hint || "待命（条件未满足）");
   }
-  if (affVerified) smartText = (smartText ? smartText + " · " : "") + "线程 affinity 已回读验证";
+  if (affVerified) smartText = (smartText ? smartText + " · " : "") + "线程优化已生效";
   if (smartError && smartReason !== "daily_conflict") smartText = (smartText ? smartText + " · " : "") + smartError;
   document.getElementById("cpulSmartInfo").textContent = smartText ||
     "线程规则：先用 cpulimit.sh observe [包名] 只读观测，再写数据目录 smartsched.rules；没有规则不会扫描或修改线程。";
@@ -1915,11 +2121,11 @@ function renderCpul(st) {
   // 底部一行说明：原来直接贴 status 原文（8 个核心的原始数值），看不懂。改成人话。
   const gameOff = /disable_cpufreq_limit=1/.test(st);
   // 出厂上限只在高通那份 status 里有（形如 "7:1843200 …"）。
-  // 天玑没有那个节点，用本机最大簇的"上限/满频"代替，别显示空。
+  // 天玑没有那个节点，用本机最大簇的"上限/硬件上限"代替，别显示空。
   const bak = ((st.match(/出厂备份：(.*)/) || [])[1] || "").trim();
   const big = (bak.match(/7:(\d+)/) || [])[1];
   const topCore = cores.length ? cores[cores.length - 1] : null;
-  const topTxt = big ? "出厂大核上限 " + (big / 1000000).toFixed(2) + " GHz"
+  const topTxt = big ? "出厂大核上限 " + (big / 1000).toFixed(0) + " MHz"
     : (topCore ? "最大簇 " + MHz(topCore.max) + " / " + MHz(topCore.hw) + " MHz" : "");
   document.getElementById("cpulInfo").textContent = [
     "前台游戏：" + (fgName && fgName !== "无" ? grecName(fgName) : "无"),
@@ -1928,20 +2134,36 @@ function renderCpul(st) {
     // 只在「本应满频」且中大核未达上限时提示；小核不参与。
     (capped && capInfo && shouldBeHot) ? "中/大核未满：" + capInfo.replace(/(\d+):(\d+%)/g, "$1 组 $2") : "",
   ].filter(Boolean).join(" · ");
+  // 游戏热预算现场（高通 status 才有 GPU 行；天玑/未开启时回落说明文案）
+  const heatEl = document.getElementById("cpulHeatInfo");
+  if (heatEl) {
+    const gm = st.match(/^GPU：温度 (\d+) 上限 (\d+) 热档 (\d+)/);
+    heatEl.textContent = gm
+      ? "GPU " + (parseInt(gm[1], 10) / 1000).toFixed(1) + "°C · 上限 " + (parseInt(gm[2], 10) / 1e6).toFixed(0) + "MHz · 热档 " + gm[3]
+        + (parseInt(gm[2], 10) < 680000000 ? "（厂商温控已压低）" : "")
+      : "大核稳健档=游戏时大核只用第二高档（如 3187MHz→2726MHz），帧率几乎不掉、发热明显降低；GPU 过热保护=GPU 到触发温度就降大核；防掉帧变暗=机身到触发温度就整体降频，赶在屏幕被降刷新率/变暗之前降温；GPU 过热动作=触发时大核落稳健档，或「整体降频」（大中小核全部回到出厂上限，降温最快、性能降得也多）；GPU 上限=只降不升、不与温控抢写。收益需逐机实测。";
+  }
 }
 
 function cpulHasUnsavedChanges() {
-  const temp = parseInt(document.getElementById("cpulTemp").value, 10);
-  const tempCpu = parseInt(document.getElementById("cpulTempCpu").value, 10);
+  // ★ 用缓存变量（滑杆 input 事件里已维护），不读 DOM：这个函数被每个开关点击
+  //   和 5s 自动刷新调用，同步读 4 个滑杆值会强制布局，是点击卡顿的一部分。
+  const temp = cpulTempVal, tempCpu = cpulTempCpuVal;
+  const guardTemp = cpulGuardTemp, dispTemp = cpulDispGuardTemp;
   const appsChanged = cpulMode === "apps" && JSON.stringify(cpulApps) !== JSON.stringify(cpulAppliedApps);
   const confZone = (!cpulConf.ZONE || cpulConf.ZONE === "auto" || cpulConf.ZONE === "shell_front")
     ? "auto" : cpulConf.ZONE;
+  const n = cpulHeatNorm();
   return temp !== cpulApplied || tempCpu !== cpulAppliedCpuTemp
     || cpulMode !== (cpulConf.MODE || "game")
     || cpulZone !== confZone || appsChanged
     || cpulSmartEnable !== (cpulConf.SMART_ENABLE === "1" ? 1 : 0)
     || cpulDailyProfile !== (cpulConf.DAILY_PROFILE === "off" ? "off" : "auto")
-    || cpulAffinityEnable !== (cpulConf.AFFINITY_ENABLE === "1" ? 1 : 0);
+    || cpulAffinityEnable !== (cpulConf.AFFINITY_ENABLE === "1" ? 1 : 0)
+    || cpulSweet !== n.sweet || cpulGuard !== n.guard
+    || guardTemp !== n.guardTemp || cpulCap !== n.cap
+    || cpulDispGuard !== n.dispGuard || dispTemp !== n.dispGuardTemp
+    || cpulGpuAction !== n.gpuAction;
 }
 function updateCpulBtn() {
   const b = document.getElementById("cpulApply");
@@ -1966,7 +2188,14 @@ function cpulSerializeConf(mode) {
     HYST: cpulConf.HYST || "3000",
     SMART_ENABLE: String(cpulSmartEnable),
     DAILY_PROFILE: cpulDailyProfile,
-    AFFINITY_ENABLE: String(cpulAffinityEnable)
+    AFFINITY_ENABLE: String(cpulAffinityEnable),
+    GAME_CPU_SWEET: cpulSweet ? "hw" : "off",
+    GPU_GUARD: cpulGuard ? "1" : "off",
+    GPU_GUARD_TEMP: String(cpulGuardTemp),
+    GPU_GUARD_ACTION: cpulGpuAction,
+    DISP_GUARD: cpulDispGuard ? "1" : "off",
+    DISP_GUARD_TEMP: String(cpulDispGuardTemp),
+    GAME_GPU_CAP: cpulCap
   });
   return "# 由「温控性能」WebUI 生成\n" + Object.keys(merged)
     .filter(k => k && merged[k] !== undefined && merged[k] !== null)
@@ -2212,6 +2441,7 @@ async function loadGameRec() {
       (x.v === "v4" ? '<div class="desc" style="margin-top:6px">' +
         esc("日常策略 " + (x.daily_pct == null ? "—" : x.daily_pct + "%") +
           " · 线程 affinity " + (x.aff_pct == null ? "—" : x.aff_pct + "%") +
+          (x.unl != null && x.unl < 95 ? " · 热保护降频 " + (100 - x.unl) + "%（温度高时主动降频，防掉帧变暗）" : "") +
           (x.quality_flags ? " · " + grecQualityText(x.quality_flags) : " · 样本质量正常")) + '</div>' : '') +
       (segNote ? '<div class="desc" style="margin-top:6px">' + esc(segNote) + '</div>' : '') +
       (jank ? '<div class="desc" style="margin-top:3px">' + esc(jank) + '</div>' : '') +
@@ -2483,12 +2713,14 @@ async function cleanRestore() {
 
   // 温控性能
   document.getElementById("cpulTemp").addEventListener("input", () => {
+    cpulTempVal = parseInt(document.getElementById("cpulTemp").value, 10) || 55000;
     document.getElementById("cpulTempVal").textContent = fmtTempC();
     cpulSyncPreset();
     updateCpulBtn();
   });
   const setTemp = (v) => {
     document.getElementById("cpulTemp").value = v;
+    cpulTempVal = v;
     document.getElementById("cpulTempVal").textContent = (v / 1000).toFixed(1) + "°C";
     cpulSyncPreset(); updateCpulBtn();
   };
@@ -2496,6 +2728,7 @@ async function cleanRestore() {
   document.getElementById("cpulPresetStd").addEventListener("click", () => setTemp(55000));
   document.getElementById("cpulPresetHot").addEventListener("click", () => setTemp(60000));
   document.getElementById("cpulTempCpu").addEventListener("input", () => {
+    cpulTempCpuVal = parseInt(document.getElementById("cpulTempCpu").value, 10) || 80000;
     document.getElementById("cpulTempCpuVal").textContent = fmtTempCpu();
     updateCpulBtn();
   });
@@ -2514,6 +2747,43 @@ async function cleanRestore() {
   document.getElementById("cpulAffinityToggle").addEventListener("click", () => {
     cpulAffinityEnable = cpulAffinityEnable ? 0 : 1; cpulSyncSmart(); updateCpulBtn();
   });
+  document.getElementById("cpulSweetToggle").addEventListener("click", () => {
+    cpulSweet = cpulSweet ? 0 : 1; cpulSyncHeat(); updateCpulBtn();
+  });
+  document.getElementById("cpulGuardToggle").addEventListener("click", () => {
+    cpulGuard = cpulGuard ? 0 : 1; cpulSyncHeat(); updateCpulBtn();
+  });
+  document.getElementById("cpulGuardTemp").addEventListener("input", () => {
+    cpulGuardTemp = parseInt(document.getElementById("cpulGuardTemp").value, 10) || 60000;
+    document.getElementById("cpulGuardTempVal").textContent = (cpulGuardTemp / 1000).toFixed(1) + "°C";
+    cpulSyncHeat(); updateCpulBtn();
+  });
+  document.getElementById("cpulDispToggle").addEventListener("click", () => {
+    cpulDispGuard = cpulDispGuard ? 0 : 1; cpulSyncHeat(); updateCpulBtn();
+  });
+  document.getElementById("cpulDispTemp").addEventListener("input", () => {
+    cpulDispGuardTemp = parseInt(document.getElementById("cpulDispTemp").value, 10) || 51500;
+    document.getElementById("cpulDispTempVal").textContent = (cpulDispGuardTemp / 1000).toFixed(1) + "°C";
+    cpulSyncHeat(); updateCpulBtn();
+  });
+  document.getElementById("cpulGpuActionToggle").addEventListener("click", () => {
+    cpulGpuAction = cpulGpuAction === "neutral" ? "sweet" : "neutral";
+    cpulSyncHeat(); updateCpulBtn();
+  });
+  // 预设：GPU 型 = 稳健档+防掉帧变暗（GPU 过热/GPU 上限归位关闭）；关闭 = 全部归零。
+  document.getElementById("cpulPresetGpu").addEventListener("click", () => {
+    cpulSweet = 1; cpulDispGuard = 1; cpulGuard = 0; cpulCap = "off";
+    cpulSyncHeat(); updateCpulBtn();
+    toast("GPU 型游戏预设已选（保存并开启后生效）");
+  });
+  document.getElementById("cpulPresetOff").addEventListener("click", () => {
+    cpulSweet = 0; cpulGuard = 0; cpulDispGuard = 0; cpulCap = "off";
+    cpulSyncHeat(); updateCpulBtn();
+  });
+  const setGpuCap = (v) => { cpulCap = v; cpulSyncHeat(); updateCpulBtn(); };
+  document.getElementById("cpulCapOff").addEventListener("click", () => setGpuCap("off"));
+  document.getElementById("cpulCap615").addEventListener("click", () => setGpuCap("615000000"));
+  document.getElementById("cpulCap680").addEventListener("click", () => setGpuCap("680000000"));
   document.getElementById("cpulPickApps").addEventListener("click", openAppPicker);
   document.getElementById("cpulApply").addEventListener("click", cpulApplyConf);
   document.getElementById("cpulStop").addEventListener("click", cpulStop);

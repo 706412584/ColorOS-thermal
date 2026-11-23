@@ -65,7 +65,8 @@ if [ -s "$MTK_BAK" ] && { [ -f "$MTK_ON" ] || [ -f "$MTK_TXN" ]; }; then
   rm -f "$MTK_ON" "$MTK_TXN"
 fi
 
-# 兜底：只有节点仍是解锁值（说明 stop 没生效）才复位。
+# 兜底：只有节点仍是"我们写的值"（完整解锁 9999999，或甜点档 = 每核硬件原生上限）
+# 才复位。stop 没生效时的保险 —— 两种值都要认，否则甜点档会被漏掉。
 # 优先写本机首次开启时备份的原值；没有有效备份才用 Ace 2 Pro 实测的出厂值
 # —— 不能无条件写死值，别的机型的出厂档位不一样。
 FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
@@ -74,7 +75,17 @@ FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
 BAK=/data/adb/oplus-cloud-block-data/cpu_max_freq.orig
 QCOM_ON=/data/adb/oplus-cloud-block-data/qcom.on
 QCOM_TXN=/data/adb/oplus-cloud-block-data/qcom.txn
-if [ -e "$FREQ" ] && { [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ]; } && [ -s "$BAK" ] && grep -q 9999999 "$FREQ" 2>/dev/null; then
+SWEETQ=""
+for c in /sys/devices/system/cpu/cpu[0-9]*; do
+  m=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null)
+  [ -n "$m" ] && SWEETQ="$SWEETQ${SWEETQ:+ }${c##*cpu}:$m"
+done
+ours_qcom() {
+  case "$1" in *9999999*) return 0 ;; esac
+  [ -n "$SWEETQ" ] && [ "$1" = "$SWEETQ" ] && return 0
+  return 1
+}
+if [ -e "$FREQ" ] && { [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ]; } && [ -s "$BAK" ] && ours_qcom "$(sed 's/[[:space:]]*$//' "$FREQ" 2>/dev/null)"; then
   ORIG=$(sed 's/[[:space:]]*$//' "$BAK" 2>/dev/null)
   case "$ORIG" in ''|*9999999*)
     if [ "$(getprop ro.product.model)" = PJA110 ]; then
@@ -91,9 +102,28 @@ if [ -e "$FREQ" ] && { [ -f "$QCOM_ON" ] || [ -f "$QCOM_TXN" ]; } && [ -s "$BAK"
   chmod 644 "$FREQ" 2>/dev/null
   printf '%s' "$ORIG" > "$FREQ" 2>/dev/null
 fi
-if ! grep -q 9999999 "$FREQ" 2>/dev/null; then
+if ! ours_qcom "$(sed 's/[[:space:]]*$//' "$FREQ" 2>/dev/null)"; then
   rm -f "$QCOM_ON" "$QCOM_TXN"
 fi
+# 兜底：GPU 实验上限（stop 已用模块逻辑还原；这里按 conf 里的实验档补保险）。
+# 只在"当前值恰为实验档"时写回出厂最高档；厂商温控正压着更低值时不动它。
+GPU_MAXF=/sys/class/kgsl/kgsl-3d0/devfreq/max_freq
+GPU_AVAIL=/sys/class/kgsl/kgsl-3d0/devfreq/available_frequencies
+GPU_ON=/data/adb/oplus-cloud-block-data/gpu.on
+GPU_TXN=/data/adb/oplus-cloud-block-data/gpu.txn
+GPU_BAK=/data/adb/oplus-cloud-block-data/gpu_max.orig
+GPUCAP=$(sed -n 's/^GAME_GPU_CAP=//p' "$MODDIR/cpulimit.conf" 2>/dev/null | tail -1)
+if [ -f "$GPU_ON" ] && [ -e "$GPU_MAXF" ] && [ -n "$GPUCAP" ] && [ "$GPUCAP" != off ]; then
+  cur=$(cat "$GPU_MAXF" 2>/dev/null)
+  bak=$(cat "$GPU_BAK" 2>/dev/null)
+  case "$bak" in ''|*[!0-9]*)
+    bak=$(printf '%s\n' $GPU_AVAIL 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
+  esac
+  if [ "$cur" = "$GPUCAP" ] && [ -n "$bak" ]; then
+    printf '%s' "$bak" > "$GPU_MAXF" 2>/dev/null
+  fi
+fi
+rm -f "$GPU_ON" "$GPU_TXN"
 GAME_ON=/data/adb/oplus-cloud-block-data/game_opt.on
 GAME_PREV=/data/adb/oplus-cloud-block-data/game_opt.orig
 if [ -f "$GAME_ON" ]; then

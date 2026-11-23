@@ -12,6 +12,27 @@ ui_print "  机型：$(getprop ro.product.model)  平台：${PLAT:-?} ${SOC}"
 ui_print "  系统：${ROM:-非 ColorOS}  Android $(getprop ro.build.version.release)"
 ui_print "  默认温控：开启 · 仅游戏 · 机身 55°C / CPU 结温 80°C"
 ui_print "  智能调和与线程 affinity 默认关闭；无 WebUI 可用「运行」数字菜单。"
+ui_print "  游戏热预算默认开启（大核稳健档 + 防掉帧变暗，实测有效；可在 WebUI 关闭）"
+
+# ---- 游戏热预算默认配置（v01.7.75 起，实测有效：PJA110 吃鸡三局对照） ----
+# 新装：cpulimit.conf 模板已带 GAME_CPU_SWEET=hw + DISP_GUARD=1（开箱即得）。
+# 升级：老 conf 里没有这两个键（旧版不认识），补上推荐值 —— 只补缺失键，
+#       不覆盖用户自己改过的值；已显式写 off 的（用户主动关过）不动。
+HEATCONF="$MODDIR/cpulimit.conf"
+heat_conf_merge() {
+  local key=$1 val=$2 cur
+  cur=$(sed -n "s/^${key}=//p" "$HEATCONF" 2>/dev/null | tail -1)
+  case "$cur" in
+    "") # 键不存在 → 追加推荐值
+      printf '%s=%s\n' "$key" "$val" >>"$HEATCONF" 2>/dev/null
+      ui_print "  已启用推荐配置：$key=$val" ;;
+    *) ;; # 用户已有值（含显式 off）→ 尊重，不动
+  esac
+}
+if [ -f "$HEATCONF" ]; then
+  heat_conf_merge GAME_CPU_SWEET hw
+  heat_conf_merge DISP_GUARD 1
+fi
 
 if [ -z "$ROM" ]; then
   ui_print "! 未检测到 ColorOS / OxygenOS。"

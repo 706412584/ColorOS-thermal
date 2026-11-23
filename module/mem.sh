@@ -3,9 +3,10 @@
 #
 # 用法：
 #   mem.sh overview        内存总览 + CPU 采样（供面板顶部显示）
-#   mem.sh list            按应用聚合的内存/CPU 明细（供列表渲染）
+#   mem.sh list            按应用聚合的内存/CPU 明细 + root 脚本进程（供列表渲染）
 #   mem.sh clean           一键清理：am kill-all（只回收可安全杀死的后台）
 #   mem.sh kill <pkg>      彻底停止某个应用（force-stop）
+#   mem.sh killpid <pid>   停止某个 root 脚本进程（限 /data /sdcard 路径，防误杀）
 #   mem.sh dropcaches      清 page cache —— 面板中默认不用，见下方说明
 #
 # 设计取舍（都有实测依据）：
@@ -77,12 +78,36 @@ cmd_overview() {
 #   oom adj  -> read < /proc/PID/oom_score_adj
 cmd_list() {
   T=/data/local/tmp/.ml.$$
-  # 一次零 fork 扫描，每行 "pid key rss_kb adj"
+  : >"$T.acc"; : >"$T.r"
+  # 零 fork 扫描。A 类行 "pid key rss_kb adj"（包名形态进程）；R 类行 "pid 完整cmdline"。
+  # ★ cmdline 是 NUL 分隔数组，read -d '' 只能拿 argv0（实测 "sh /data/x.sh" 只读到
+  #   "sh"，sh 包装的脚本进程全部漏扫）。argv0 是解释器时才二次 tr 读全参，控制 fork 成本。
   for p in /proc/[0-9]*; do
     pid=${p#/proc/}
     IFS= read -r -d '' cmd 2>/dev/null <"$p/cmdline" || continue
     [ -n "$cmd" ] || continue
-    case "$cmd" in /*) continue ;; esac           # 二进制路径
+    case "$cmd" in
+      sh|bash|toybox|busybox|/system/bin/sh|/system/xbin/su|su)
+        full=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)
+        [ -n "$full" ] && cmd=${full% } ;;
+    esac
+    # root 脚本/裸进程（R 类）：cmdline 是 /data /sdcard /storage 路径，或参数里带
+    # 这些路径（sh 包装）。root 手起的破解工具、后台脚本烧 CPU 在这里抓到。
+    # /data/adb 是 root 管理器与模块基础设施（KernelSU busybox、模块守护），两种
+    # 形态都排除防误杀；/system /vendor /odm 路径照旧跳过。
+    case "$cmd" in
+      /data/adb/*|/data/dalvik*|/data/misc/*|/data/system/*) continue ;;
+      *" /data/adb/"*|*" /data/dalvik"*|*" /data/misc/"*) continue ;;
+    esac
+    r_hit=0
+    case "$cmd" in
+      /data/*|/sdcard/*|/storage/*) r_hit=1 ;;
+      *" /data/"*|*" /sdcard/"*|*" /storage/"*) r_hit=1 ;;
+    esac
+    if [ "$r_hit" = 1 ]; then
+      echo "$pid $cmd" >>"$T.r"
+      continue
+    fi
     key=${cmd%%:*}                                # :sub 进程归到主包
     case "$key" in *.*) ;; *) continue ;; esac    # 只保留包名形态
     read -r _sz res _rest 2>/dev/null <"$p/statm" || continue
@@ -90,17 +115,16 @@ cmd_list() {
     read -r adj 2>/dev/null <"$p/oom_score_adj"
     # 必须用 echo：Android 的 sh 里 printf 是外部程序（非内建），
     # 逐进程调用会让扫描从 56ms 涨到 2000ms。
-    echo "$pid $key $((res * 4)) ${adj:-0}"
-  done >"$T.acc" 2>/dev/null
+    echo "$pid $key $((res * 4)) ${adj:-0}" >>"$T.acc"
+  done 2>/dev/null
 
   : >"$T.out"
 
   # 1) 内存按包聚合（1 次 awk）
   awk '{rss[$2]+=$3; if($4+0>v[$2])v[$2]=$4+0; n[$2]++}
-       END{for(k in rss) printf "A|%s|%d|%d|%d\n", k, rss[k], v[k], n[k]}' "$T.acc" \
-    | sort -t'|' -k3 -rn >>"$T.out"
+       END{for(k in rss) printf "A|%s|%d|%d|%d\n", k, rss[k], v[k], n[k]}' "$T.acc"     | sort -t'|' -k3 -rn >>"$T.out"
 
-  # 2) CPU：两次快照求差，再用 $T.acc 的 pid->key 映射聚合（1 次 awk 三文件 join）
+  # 2) CPU：两次快照求差，再用 pid->key 映射聚合（1 次 awk 三文件 join）
   #    采样窗 600ms —— 分辨率够用（非零进程至少 1 tick=10ms 才会被记到），
   #    而 sleep 1 会让用户感觉"点了没反应"。
   cat /proc/[0-9]*/stat 2>/dev/null | awk '{print $1, $14+$15}' >"$T.s1"
@@ -113,10 +137,19 @@ cmd_list() {
     { if (($1 in a) && ($1 in key)) { d=$2-a[$1]; if (d>0) c[key[$1]]+=d } }
     END { for (k in c) printf "C|%s|%d|0|1\n", k, int(c[k]*1000/(hz*0.6)) }
   ' "$T.acc" "$T.s1" "$T.s2" | sort -t'|' -k3 -rn | head -25 >>"$T.out"
+  # 3) R 类：root 脚本进程（R|pid|cmdline|cpu千分比），按 CPU 排序全量输出。
+  #    cmdline 含空格，输出列用 | 分隔后由 WebUI join 还原。
+  awk -v hz="$HZ" '
+    FILENAME==ARGV[1] { cmd[$1]=$0; sub(/^[0-9]+ /,"",cmd[$1]); next }
+    FILENAME==ARGV[2] { a[$1]=$2;    next }
+    { if (($1 in a) && ($1 in cmd)) { d=$2-a[$1]; if (d>0) c[$1]=d } }
+    END { for (pid in cmd) printf "R|%d|%s|%d\n", pid, cmd[pid], int(c[pid]*1000/(hz*0.6)) }
+  ' "$T.r" "$T.s1" "$T.s2" | sort -t'|' -k4 -rn >>"$T.out"
 
   cat "$T.out" 2>/dev/null
-  rm -f "$T.acc" "$T.s1" "$T.s2" "$T.out"
+  rm -f "$T.acc" "$T.r" "$T.s1" "$T.s2" "$T.out"
 }
+
 
 # ---------- 清理动作 ----------
 cmd_clean() {
@@ -165,6 +198,26 @@ cmd_kill() {
   fi
 }
 
+cmd_killpid() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) echo "不是合法 PID"; exit 1 ;; esac
+  [ -d "/proc/$pid" ] || { echo "进程 $pid 已不存在"; exit 0; }
+  # 安全校验（防 PID 复用后误杀）：目标必须是 /data /sdcard /storage 路径的
+  # 脚本进程（直接路径或 sh 包装均可）；/data/adb 基础设施拒绝。
+  # 读全 cmdline（NUL 分隔数组 → 空格）；单进程一次 tr，成本可忽略
+  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)
+  cmd=${cmd% }
+  case "$cmd" in
+    /data/adb/*|*" /data/adb/"*) echo "拒绝：root 基础设施进程"; exit 1 ;;
+  esac
+  case "$cmd" in
+    /data/*|/sdcard/*|/storage/*) ;;
+    *" /data/"*|*" /sdcard/"*|*" /storage/"*) ;;
+    *) echo "拒绝：目标不是数据分区脚本进程"; exit 1 ;;
+  esac
+  kill -9 "$pid" 2>/dev/null && echo "已停止 $pid：$cmd" || echo "停止失败 $pid"
+}
+
 cmd_dropcaches() {
   before_f=$(mem_stat | tr ' ' '\n' | awk -F= '/FREE/{print int($2/1024)}')
   before_a=$(mem_stat | tr ' ' '\n' | awk -F= '/AVAIL/{print int($2/1024)}')
@@ -184,6 +237,7 @@ case "$1" in
   list)       cmd_list ;;
   clean)      cmd_clean ;;
   kill)       cmd_kill "$2" ;;
+  killpid)    cmd_killpid "$2" ;;
   dropcaches) cmd_dropcaches ;;
   *) echo "用法：mem.sh {overview|list|clean|kill <pkg>|dropcaches}"; exit 1 ;;
 esac

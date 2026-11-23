@@ -590,6 +590,7 @@ sample() {
         case "$SM_STATE" in
           PERF) S_SM_STATE=1 ;; DAILY) S_SM_STATE=2 ;; HOT) S_SM_STATE=3 ;;
           SENSOR_FAULT) S_SM_STATE=4 ;; NEUTRAL) S_SM_STATE=5 ;;
+          GPU_HOT) S_SM_STATE=6 ;;
         esac
       else
         # 老版本或失效控制器：保留原始节点作参考，但明确标为旧/混合或陈旧样本。
