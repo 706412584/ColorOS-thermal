@@ -13,12 +13,26 @@
 MODDIR=${0%/*}
 LOG=/data/adb/oplus-cloud-block.log
 
+# --- 停脚本限制守护：先 TERM 让它按台账恢复受限进程，再兜底 restoreall 与强杀 ---
+for p in /proc/[0-9]*; do
+  case "$(tr '\0' ' ' 2>/dev/null <"$p/cmdline")" in *mem.sh*guard*) kill -TERM "${p#/proc/}" 2>/dev/null ;; esac
+done
+sleep 1
+[ -f "$MODDIR/mem.sh" ] && sh "$MODDIR/mem.sh" restoreall >/dev/null 2>&1
+for p in /proc/[0-9]*; do
+  case "$(tr '\0' ' ' 2>/dev/null <"$p/cmdline")" in *mem.sh*guard*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac
+done
+rm -f /data/adb/oplus-cloud-block-data/scriptlimit.pid \
+      /data/adb/oplus-cloud-block-data/scriptlimit.pid.start \
+      /data/adb/oplus-cloud-block-data/scriptlimit.pid.script \
+      /data/adb/oplus-cloud-block-data/scriptlimit.state
+
 # --- 停游戏记录守护（记录文件在数据目录，保留）---
 [ -f "$MODDIR/gamerec.sh" ] && sh "$MODDIR/gamerec.sh" stop >/dev/null 2>&1
 for p in /proc/[0-9]*; do
   case "$(tr '\0' ' ' 2>/dev/null <"$p/cmdline")" in *gamerec.sh*daemon*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac
 done
-rm -f /data/adb/oplus-gamerec.pid
+rm -f /data/adb/oplus-gamerec.pid /data/adb/oplus-gamerec.pid.script
 
 # --- 还原 CPU 上限 ---
 # 优先用模块自带的 stop（内含精确还原 + 撤销 chmod 444 锁）
@@ -37,7 +51,7 @@ if [ -f "$PIDFILE" ]; then
          *cpulimit.sh*daemon*) kill -9 "$p" 2>/dev/null ;;
        esac ;;
   esac
-  rm -f "$PIDFILE" "$PIDFILE.start"
+  rm -f "$PIDFILE" "$PIDFILE.start" "$PIDFILE.script"
 fi
 for r in 1 2 3; do
   pids=""

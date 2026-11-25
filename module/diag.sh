@@ -736,6 +736,12 @@ sec "游戏记录"
 sh "$MODDIR/gamerec.sh" status 2>&1
 echo "最近 5 局："; sh "$MODDIR/gamerec.sh" list 2>/dev/null | tail -5
 echo "游戏名单：$(cat /data/adb/oplus-cpulimit.games 2>/dev/null | tr '\n' ' ')"
+# 游戏识别现场（MODE=game 时守护在变化时写入）：报告单独列最近 6 条，避免被
+# 模块日志 300 行的其它输出挤掉。判读：game_pid 非 -1 = 系统认了游戏；
+# 前台包里有游戏但名单命中=无 = 游戏空间名单没收录；前台包无游戏 = cpuset 问题。
+# 不能只列最后一条：退出游戏会再写一条"没有游戏"的现场，把对局中的证据顶掉。
+echo "最近 6 条游戏识别现场："
+grep '游戏检测：' "$LOG" 2>/dev/null | tail -6 | sed 's/^/  /'
 
 sec "守护进程"
 # 先用内建 read 只看进程名是不是 sh，是才 fork tr 读完整命令行。

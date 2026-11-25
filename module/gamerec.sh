@@ -38,16 +38,20 @@ REC_BAK=$DATA/gamerec.log.cleared
 CUR=$DATA/gamerec.cur
 OFF=$DATA/gamerec.off
 PIDFILE=/data/adb/oplus-gamerec.pid
+SELF=${GAMEREC_SELF:-$0}
+SCRIPTSIG=${GAMEREC_SCRIPTSIG:-$PIDFILE.script}
 LOG=/data/adb/oplus-cloud-block.log
 GAME_LIST_CACHE=/data/adb/oplus-cpulimit.games
-GAMEPID=/proc/game_opt/game_pid
+GAMEPID=${GAMEREC_GAMEPID:-/proc/game_opt/game_pid}
 FREQ=/sys/kernel/msm_performance/parameters/cpu_max_freq
 # 老内核（如 4.14）上同一个节点在 /sys/module 下
 [ -e "$FREQ" ] || FREQ=/sys/module/msm_performance/parameters/cpu_max_freq
 BATCAP=/sys/class/power_supply/battery/capacity
 BATST=/sys/class/power_supply/battery/status
-TOP_PROCS=/dev/cpuset/top-app/cgroup.procs
+TOP_PROCS=${GAMEREC_TOP_PROCS:-/dev/cpuset/top-app/cgroup.procs}
 PROC_ROOT=${GAMEREC_PROC_ROOT:-/proc}
+# 与温控性能合并口径：WebUI「指定应用」勾选的包也按游戏记录（系统识别不到游戏时的兜底）
+APPS_FILE=${GAMEREC_APPS_FILE:-$MODDIR/cpulimit.apps}
 SMART_STATE_FILE=${GAMEREC_SMART_STATE_FILE:-/data/adb/oplus-cloud-block-data/smart.state}
 
 KEEP=50        # 保留最近 50 局
@@ -58,6 +62,23 @@ NL='
 '
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [游戏记录] $*" >>"$LOG"; }
+
+# 脚本内容摘要（只取第一列，不含路径）：模块在线更新替换 gamerec.sh 后，
+# 已在跑的守护仍是旧代码。ensure 靠它发现并重启，让新的统计逻辑立即生效。
+s_sig() {
+  if command -v cksum >/dev/null 2>&1; then cksum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v md5sum >/dev/null 2>&1; then md5sum "$1" 2>/dev/null | awk '{print $1}'
+  else stat -c '%Y-%s' "$1" 2>/dev/null
+  fi
+}
+daemon_stale() {
+  local cur now
+  cur=$(cat "$SCRIPTSIG" 2>/dev/null)
+  now=$(s_sig "$SELF")
+  [ -n "$now" ] || return 1
+  [ "$cur" = "$now" ] && return 1
+  return 0
+}
 
 # ---------- 读取（全部用内建 read，不 fork） ----------
 rd() { # $1 = 文件，结果放 RV
@@ -116,7 +137,7 @@ smart_read_state() {
 
 # 进程 pid -> 包名（去掉 :子进程）
 pid_pkg() {
-  PK=""; IFS= read -r -d '' PK 2>/dev/null <"/proc/$1/cmdline"
+  PK=""; IFS= read -r -d '' PK 2>/dev/null <"${PROC_ROOT}/$1/cmdline"
   PK=${PK%%:*}
 }
 
@@ -139,12 +160,23 @@ fg_game() {
       fi ;;
   esac
   # ② top-app cpuset 里有名单内的游戏
-  [ -n "$GAMES" ] && [ -r "$TOP_PROCS" ] || return
   local pid
+  if [ -n "$GAMES" ] && [ -r "$TOP_PROCS" ]; then
+    while read -r pid; do
+      pid_pkg "$pid"
+      case "$PK" in *.*) ;; *) continue ;; esac
+      case "$NL$GAMES$NL" in *"$NL$PK$NL"*) FG=$PK; return ;; esac
+    done <"$TOP_PROCS"
+  fi
+  # ③ 合并「指定应用」：系统名单没命中时，WebUI 勾选的应用也按游戏记录
+  local plist="" ap
+  [ -f "$APPS_FILE" ] && [ -r "$TOP_PROCS" ] || return
+  while read -r ap; do [ -n "$ap" ] && plist="$plist$NL$ap"; done 2>/dev/null <"$APPS_FILE"
+  [ -n "$plist" ] || return
   while read -r pid; do
     pid_pkg "$pid"
     case "$PK" in *.*) ;; *) continue ;; esac
-    case "$NL$GAMES$NL" in *"$NL$PK$NL"*) FG=$PK; return ;; esac
+    case "$plist$NL" in *"$NL$PK$NL"*) FG=$PK; return ;; esac
   done <"$TOP_PROCS"
 }
 
@@ -662,8 +694,9 @@ end_session() {
 daemon() {
   MY=$$
   echo "$MY" >"$PIDFILE"
+  s_sig "$SELF" >"$SCRIPTSIG" 2>/dev/null
   echo -1000 >/proc/$MY/oom_score_adj 2>/dev/null
-  trap 'end_session; rm -f "$PIDFILE"; exit 0' TERM INT
+  trap 'end_session; rm -f "$PIDFILE" "$SCRIPTSIG"; exit 0' TERM INT
   S_PKG=""; S_HKEYS=""; BG=0; TICK=0
   rm -f "$CUR"
   # 开机/启动时重建一次游戏名单（新装的游戏才能被识别）
@@ -689,8 +722,8 @@ daemon() {
     if [ -z "$S_PKG" ] && [ -n "$FG" ]; then
       reset_session "$FG"; BG=0; sample; sleep 1; continue
     fi
-    # 空闲时每 30 分钟刷新一次游戏名单
-    if [ -z "$S_PKG" ] && [ $(( TICK % 900 )) -eq 0 ]; then
+    # 空闲时每 5 分钟刷新一次游戏名单（IDLE_SLEEP=2s；新装的游戏最多等 5 分钟就能被识别）
+    if [ -z "$S_PKG" ] && [ $(( TICK % 150 )) -eq 0 ]; then
       sh "$MODDIR/cpulimit.sh" buildgames >/dev/null 2>&1; load_games
     fi
     sleep "$IDLE_SLEEP"
@@ -713,7 +746,7 @@ stop_daemon() {
     while [ "$i" -lt 15 ] && kill -0 "$p" 2>/dev/null; do sleep 0.2; i=$(( i + 1 )); done
     kill -9 "$p" 2>/dev/null
   fi
-  rm -f "$PIDFILE"
+  rm -f "$PIDFILE" "$SCRIPTSIG"
 }
 
 start_daemon() {
@@ -729,7 +762,14 @@ case "$1" in
   daemon) daemon ;;
   start)  [ -f "$OFF" ] && { echo "游戏记录已关闭"; exit 0; }; start_daemon; echo "游戏记录已启动" ;;
   stop)   stop_daemon; echo "游戏记录已停止" ;;
-  ensure) if [ -f "$OFF" ]; then is_alive && stop_daemon; else is_alive || start_daemon; fi ;;
+  ensure) if [ -f "$OFF" ]; then
+            is_alive && stop_daemon
+          elif ! is_alive; then
+            start_daemon
+          elif daemon_stale; then
+            log "检测到脚本已更新，重启守护加载新代码"
+            start_daemon
+          fi ;;
   on)     rm -f "$OFF"; is_alive || start_daemon; echo "已开启游戏记录" ;;
   off)    mkdir -p "$DATA"; : >"$OFF"; stop_daemon; echo "已关闭游戏记录（已有记录保留）" ;;
   status)

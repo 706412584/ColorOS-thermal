@@ -154,10 +154,16 @@ if [ -f "$MODDIR/gamerec.sh" ]; then
   sh "$MODDIR/gamerec.sh" ensure >/dev/null 2>&1
 fi
 
-# 6. 保持 USB 调试 / 无线调试（WebUI 开关，默认关；开关文件在数据目录）
+# 6. 脚本限制守护（有规则才启动；无规则时 ensure 立即返回）
+if [ -f "$MODDIR/mem.sh" ]; then
+  log "脚本限制：按规则检查启动"
+  sh "$MODDIR/mem.sh" ensure >/dev/null 2>&1
+fi
+
+# 7. 保持 USB 调试 / 无线调试（WebUI 开关，默认关；开关文件在数据目录）
 [ -f "$MODDIR/adbkeep.sh" ] && sh "$MODDIR/adbkeep.sh" check >/dev/null 2>&1
 
-# 看护循环：每 120s 检查两个守护是否还在；保持 USB 调试打开时每 15s 查一次 adb 开关
+# 看护循环：每 120s 检查各个守护是否还在；保持 USB 调试打开时每 15s 查一次 adb 开关
 # （开关没开时只是一次 [ -f ] 判断，不 fork）
 if [ ! -f "$MODDIR/no_watchdog" ]; then
   (
@@ -172,6 +178,7 @@ if [ ! -f "$MODDIR/no_watchdog" ]; then
       [ $((n % 8)) -eq 0 ] || continue
       [ -f "$MODDIR/cpulimit.sh" ] && sh "$MODDIR/cpulimit.sh" ensure >/dev/null 2>&1
       [ -f "$MODDIR/gamerec.sh" ] && sh "$MODDIR/gamerec.sh" ensure >/dev/null 2>&1
+      [ -f "$MODDIR/mem.sh" ] && sh "$MODDIR/mem.sh" ensure >/dev/null 2>&1
     done
   ) &
   log "看护循环已启动（守护每 120s 检查一次）"

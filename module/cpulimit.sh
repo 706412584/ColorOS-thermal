@@ -24,6 +24,7 @@ PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 export PATH
 
 MODDIR=${CPULIMIT_MODDIR:-${0%/*}}
+SELF=${CPULIMIT_SELF:-$0}
 CONF="$MODDIR/cpulimit.conf"
 # 路径集中定义，正常设备保持原值；测试可用 fake proc/sys 替换，避免碰真实节点。
 PROC_ROOT=${CPULIMIT_PROC_ROOT:-/proc}
@@ -46,6 +47,7 @@ GAMEPID=${CPULIMIT_GAMEPID:-$GAME_OPT/game_pid}
 TOP_PROCS=${CPULIMIT_TOP_PROCS:-/dev/cpuset/top-app/cgroup.procs}
 PIDFILE=${CPULIMIT_PIDFILE:-/data/adb/oplus-cpulimit.pid}
 PIDSTART="$PIDFILE.start"
+SCRIPTSIG=${CPULIMIT_SCRIPTSIG:-$PIDFILE.script}
 CMD_LOCK=${CPULIMIT_CMD_LOCK:-/data/adb/oplus-cpulimit.cmdlock}
 LOG=${CPULIMIT_LOG:-/data/adb/oplus-cloud-block.log}
 DATA=${CPULIMIT_DATA:-/data/adb/oplus-cloud-block-data}
@@ -1127,6 +1129,7 @@ sys_game() {
 # 不再用 /data/oplus/uxicons/<pkg>/game_app.png：实测豆包、豆包输入法也有这个图标，
 # 会被当成游戏 —— 输入法常驻后台，「仅游戏」模式就等于一直满频。
 # 没进名单的游戏在独占前台时仍会被系统 game_pid 识别。
+# 两条都没命中时，game 模式下 WebUI「指定应用」勾选的包也按游戏处理（合并兜底）。
 GAME_LIST_CACHE=${CPULIMIT_GAME_LIST_CACHE:-/data/adb/oplus-cpulimit.games}
 build_game_list() {
   settings list global 2>/dev/null \
@@ -1135,30 +1138,36 @@ build_game_list() {
 }
 NL='
 '
-# 前台游戏的包名放进 GAME_FG（没有游戏在前台则为空，返回 1）：
-#   ① 系统 game_pid（游戏独占前台时置位）
-#   ② top-app cpuset 里有名单内的游戏
+# 前台游戏的包名放进 GAME_FG（没有游戏在前台则为空，返回 1）；来源放进 GAME_FG_SRC：
+#   pid  = 系统 game_pid（游戏独占前台时置位）
+#   list = top-app cpuset 里有名单内的游戏
+#   app  = ③ 合并兜底：系统没认出游戏时，WebUI「指定应用」里勾选的包在前台
 # 只认前台：王者这类游戏退到后台后进程常驻，以前只看进程在不在，
 # 在桌面上也一直满频，白白耗电发热。全部用内建 read，不 fork。
 game_fg() {
-  GAME_FG=""
+  GAME_FG=""; GAME_FG_SRC=""
   local g=""; read -r g 2>/dev/null <"$GAMEPID"
   case "$g" in *game_pid=*) g=${g#*game_pid=}; g=${g%%[!0-9]*} ;; *) g="" ;; esac
   local nm
   if [ -n "$g" ] && [ "$g" != "0" ]; then
     nm=""; IFS= read -r -d '' nm 2>/dev/null <"${PROC_ROOT}/$g/cmdline"; nm=${nm%%:*}
-    [ -n "$nm" ] && { GAME_FG=$nm; return 0; }
+    [ -n "$nm" ] && { GAME_FG=$nm; GAME_FG_SRC=pid; return 0; }
   fi
-  [ -r "$TOP_PROCS" ] || return 1
-  [ -f "$GAME_LIST_CACHE" ] || build_game_list
-  local games="" l pid
-  while read -r l; do [ -n "$l" ] && games="$games$NL$l"; done 2>/dev/null <"$GAME_LIST_CACHE"
-  [ -n "$games" ] || return 1
-  while read -r pid; do
-    nm=""; IFS= read -r -d '' nm 2>/dev/null <"${PROC_ROOT}/$pid/cmdline"; nm=${nm%%:*}
-    case "$nm" in *.*) ;; *) continue ;; esac
-    case "$games$NL" in *"$NL$nm$NL"*) GAME_FG=$nm; return 0 ;; esac
-  done <"$TOP_PROCS"
+  if [ -r "$TOP_PROCS" ]; then
+    [ -f "$GAME_LIST_CACHE" ] || build_game_list
+    local games="" l pid
+    while read -r l; do [ -n "$l" ] && games="$games$NL$l"; done 2>/dev/null <"$GAME_LIST_CACHE"
+    if [ -n "$games" ]; then
+      while read -r pid; do
+        nm=""; IFS= read -r -d '' nm 2>/dev/null <"${PROC_ROOT}/$pid/cmdline"; nm=${nm%%:*}
+        case "$nm" in *.*) ;; *) continue ;; esac
+        case "$games$NL" in *"$NL$nm$NL"*) GAME_FG=$nm; GAME_FG_SRC=list; return 0 ;; esac
+      done <"$TOP_PROCS"
+    fi
+  fi
+  # ③ 合并「指定应用」：只对「仅游戏」模式生效。系统名单/game_pid 都没认出来时，
+  #    用户在 WebUI 里勾选的应用也算游戏 —— 老系统认不出的游戏可以这样兜底。
+  if [ "$MODE" = game ] && app_fg; then GAME_FG_SRC=app; return 0; fi
   return 1
 }
 
@@ -1171,6 +1180,49 @@ game_active() {
   up_s
   if game_fg; then GAME_LAST=$GAME_FG; GAME_SEEN=$UP; return 0; fi
   [ -n "$GAME_SEEN" ] && [ $(( UP - GAME_SEEN )) -lt "$GAME_GRACE" ]
+}
+
+# ---- 游戏检测现场（诊断用） ----
+# ColorOS 13 / realme 等老系统上出现过「游戏在前台却一直待命」：game_pid 不置位，
+# 游戏空间名单也没收录该游戏。守护在 MODE=game 下把「game_pid + 名单命中 +
+# top-app 里的包名集合」在变化时记一行 —— 事后从日志就能判断断在哪条链路：
+#   game_pid 非 -1        → 系统认了游戏，断在下面的解析/名单
+#   game_pid=-1 命中=无   → 系统没认游戏，名单也没有
+#   前台包=[...] 里没有游戏 → top-app cpuset 里根本没出现游戏
+# 只记包名（不含应用名/账号）；同一现场不重复写（每拍都写会刷屏）。
+GAME_PROBE_PREV=""
+game_probe() {
+  [ "$MODE" = game ] || return 0
+  local raw="" g="?" names="" hit="" ah="" l p nm cnt
+  read -r raw 2>/dev/null <"$GAMEPID"
+  case "$raw" in
+    *game_pid=*) g=${raw#*game_pid=}; g=${g%%[!0-9-]*}; [ -n "$g" ] || g="?" ;;
+  esac
+  if [ -r "$TOP_PROCS" ]; then
+    while read -r p; do
+      nm=""; IFS= read -r -d '' nm 2>/dev/null <"${PROC_ROOT}/$p/cmdline"
+      nm=${nm%%:*}
+      case "$nm" in *.*) ;; *) continue ;; esac
+      case " $names " in *" $nm "*) continue ;; esac
+      names="$names${names:+ }$nm"
+    done <"$TOP_PROCS"
+  fi
+  [ -f "$GAME_LIST_CACHE" ] || build_game_list
+  while read -r l; do
+    [ -n "$l" ] || continue
+    case " $names " in *" $l "*) hit=$l; break ;; esac
+  done 2>/dev/null <"$GAME_LIST_CACHE"
+  # 合并兜底是否命中（仅游戏模式才把勾选应用当游戏，这里只记录现场）
+  if [ "$MODE" = game ] && [ -f "$APPS_FILE" ]; then
+    while read -r l; do
+      [ -n "$l" ] || continue
+      case " $names " in *" $l "*) ah=$l; break ;; esac
+    done 2>/dev/null <"$APPS_FILE"
+  fi
+  [ "$g|$names|$hit|$ah" = "$GAME_PROBE_PREV" ] && return 0
+  GAME_PROBE_PREV="$g|$names|$hit|$ah"
+  cnt=$(grep -c '' "$GAME_LIST_CACHE" 2>/dev/null)
+  log "游戏检测：game_pid=$g 名单命中=${hit:-无} 已选命中=${ah:-无} 名单=${cnt:-?} 前台包=[${names:-空}]"
 }
 
 # 按游戏单独设的温度阈值 = 在「当前温区级别的基础阈值」上再偏移。
@@ -1244,11 +1296,27 @@ top_pkg() {
   printf '%s' "$p"
 }
 
-# 勾选的应用列表（每行一个包名，来自 cpulimit.conf 的 APPS=... 或 apps.txt）
-APPS_FILE="$MODDIR/cpulimit.apps"
+# 勾选的应用列表（每行一个包名，来自 WebUI 的「指定应用」）
+APPS_FILE=${CPULIMIT_APPS_FILE:-$MODDIR/cpulimit.apps}
 app_selected() { # $1 = 包名
   [ -f "$APPS_FILE" ] || return 1
   grep -qxF "$1" "$APPS_FILE" 2>/dev/null
+}
+# 是否配置过「指定应用」（只有空白行不算）
+has_selected_apps() { [ -f "$APPS_FILE" ] && grep -qv '^[[:space:]]*$' "$APPS_FILE" 2>/dev/null; }
+# 「仅游戏」模式的合并兜底：勾选的应用出现在 top-app 时也按游戏处理。
+# 与游戏名单走同一判据（只认前台），不依赖厂商是否把该包识别成游戏。
+app_fg() {
+  [ -f "$APPS_FILE" ] && [ -r "$TOP_PROCS" ] || return 1
+  local plist="" l pid nm
+  while read -r l; do [ -n "$l" ] && plist="$plist$NL$l"; done 2>/dev/null <"$APPS_FILE"
+  [ -n "$plist" ] || return 1
+  while read -r pid; do
+    nm=""; IFS= read -r -d '' nm 2>/dev/null <"${PROC_ROOT}/$pid/cmdline"; nm=${nm%%:*}
+    case "$nm" in *.*) ;; *) continue ;; esac
+    case "$plist$NL" in *"$NL$nm$NL"*) GAME_FG=$nm; return 0 ;; esac
+  done <"$TOP_PROCS"
+  return 1
 }
 # ---- 决策：现在应该解锁吗 ----
 # 阈值只有一个计算入口，避免守护 / WebUI / 日志算出不同的值。
@@ -1346,8 +1414,12 @@ why_state() {
   case "$MODE" in
     game)
       # WebUI 打开时游戏必然不在前台；守护有 15 秒宽限，所以刚切出来时仍是满频
-      if [ -n "$GAME_FG" ]; then echo "游戏 $GAME_FG 在前台，已满频（阈值 $(mC "$EFF_TEMP")）"
-      elif [ "$unl" = 是 ]; then echo "游戏刚切到后台，15 秒内收回"
+      if [ -n "$GAME_FG" ]; then
+        [ "$GAME_FG_SRC" = app ] \
+          && echo "已选应用 $GAME_FG 在前台，已满频（阈值 $(mC "$EFF_TEMP")）" \
+          || echo "游戏 $GAME_FG 在前台，已满频（阈值 $(mC "$EFF_TEMP")）"
+      elif [ "$unl" = 是 ]; then echo "刚切到后台，15 秒内收回"
+      elif has_selected_apps; then echo "待命 · 游戏或已选应用在前台时满频"
       else echo "待命 · 游戏在前台时满频"; fi ;;
     apps)
       if [ -z "$cur" ]; then echo "待命 · 取不到前台应用"
@@ -2284,6 +2356,7 @@ tick() {
   smart_decide
   smart_transition
   smart_publish
+  game_probe
 }
 
 # ---- 守护 ----
@@ -2320,7 +2393,7 @@ stop_daemon() {
     op=$(cat "$PIDFILE" 2>/dev/null)
     # 先核对 cmdline 和启动时间，PID 被复用时不能误杀无关进程。
     if is_alive; then kill -9 "$op" 2>/dev/null; fi
-    rm -f "$PIDFILE" "$PIDSTART"
+    rm -f "$PIDFILE" "$PIDSTART" "$SCRIPTSIG"
   fi
   kill_daemons
 }
@@ -2354,6 +2427,19 @@ file_sig() {
   fi
 }
 conf_sig() { file_sig "$CONF"; }
+# 脚本内容摘要（只取第一列，不含路径）：模块在线更新会整体替换 cpulimit.sh，
+# 但已经在跑的守护还是旧代码。ensure/apply 靠它发现问题并重启守护。
+script_sig() { file_sig "$1" 2>/dev/null | awk '{print $1}'; }
+# 守护是否来自更新前的旧代码。取不到签名时保守当作"未过期"，
+# 避免文件系统异常时每 120 秒反复重启守护。
+daemon_stale() {
+  local cur now
+  cur=$(cat "$SCRIPTSIG" 2>/dev/null)
+  now=$(script_sig "$SELF")
+  [ -n "$now" ] || return 1
+  [ "$cur" = "$now" ] && return 1
+  return 0
+}
 
 daemon_cleanup() {
   # 新实例已经接管 PIDFILE 时，旧实例绝不能恢复新实例刚写入的资源。
@@ -2362,16 +2448,19 @@ daemon_cleanup() {
   local rc=$?
   [ "$rc" = 0 ] || LAST_ERROR="部分资源恢复失败"
   smart_invalidate
-  rm -f "$PIDFILE" "$PIDSTART"
+  rm -f "$PIDFILE" "$PIDSTART" "$SCRIPTSIG"
 }
 
 daemon() {
   MY=$$
   echo "$MY" >"$PIDFILE"
   proc_starttime "$MY" >"$PIDSTART" 2>/dev/null
+  # 记下本实例启动时的脚本摘要；模块更新后 ensure 会拿磁盘上的新脚本对比。
+  script_sig "$SELF" >"$SCRIPTSIG" 2>/dev/null
   echo -1000 >"${PROC_ROOT}/$MY/oom_score_adj" 2>/dev/null
   trap 'daemon_cleanup; exit 0' TERM INT HUP
   SMART_STATE=NEUTRAL; SMART_REASON=starting
+  GAME_PROBE_PREV=""
   DAILY_SINCE=""; HOT_CLEAR_N=0; SENSOR_CLEAR_N=0
   GPU_T=""; GPU_HOT_ON=0; GPU_CLEAR_N=0
   DISP_HOT_ON=0; DISP_CLEAR_N=0
@@ -2395,7 +2484,7 @@ daemon() {
         restore_all_owned; rm -f "$HOT_FLAG"
         smart_invalidate
         log "ENABLE!=1，已还原模块资源并退出"
-        rm -f "$PIDFILE" "$PIDSTART"; exit 0
+        rm -f "$PIDFILE" "$PIDSTART" "$SCRIPTSIG"; exit 0
       fi
       LASTCONF=$sig
       APPLIED_CONF_SIG=$sig
@@ -2545,6 +2634,14 @@ cmd_apply() {
   if ! is_alive; then
     nohup sh "$0" daemon >/dev/null 2>&1 &
     echo "已按新配置启动守护（TEMP=$TEMP MODE=$MODE SMART=$SMART_ENABLE）"
+  elif daemon_stale; then
+    # 模块在线更新替换了脚本：旧守护还在跑旧代码，必须换新实例才生效。
+    log "apply：脚本已更新，重启守护加载新代码"
+    stop_daemon
+    restore_all_owned
+    smart_invalidate
+    nohup sh "$0" daemon >/dev/null 2>&1 &
+    echo "脚本已更新，已重启守护（TEMP=$TEMP MODE=$MODE SMART=$SMART_ENABLE）"
   else
     # 不在 WebUI 进程里直接 tick，避免与守护同时写同一批节点；mtime 会让守护下一拍重载。
     echo "配置已提交，守护将在下一拍应用（TEMP=$TEMP MODE=$MODE SMART=$SMART_ENABLE）"
@@ -2563,8 +2660,15 @@ cmd_ensure() {
     smart_invalidate
     return 0
   fi
-  is_alive && return 0
-  log "ensure：守护不在，先恢复可能残留的资源再重新拉起"
+  if is_alive; then
+    # 模块在线更新只替换文件，旧守护会一直跑旧代码（实测：更新后 16 小时仍是旧逻辑）。
+    # 磁盘脚本和守护启动时记下的摘要不一致 → 停旧守护、还原资源、拉起新实例。
+    daemon_stale || return 0
+    log "ensure：检测到脚本已更新，重启守护加载新代码"
+    stop_daemon
+  else
+    log "ensure：守护不在，先恢复可能残留的资源再重新拉起"
+  fi
   restore_all_owned
   smart_invalidate
   nohup sh "$0" daemon >/dev/null 2>&1 &

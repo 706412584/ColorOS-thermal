@@ -337,7 +337,7 @@
           <button class="tab" id="cpulModeGame" style="padding:8px 14px">仅游戏(推荐)</button>
           <button class="tab" id="cpulModeApps" style="padding:8px 14px">指定应用</button>
         </div>
-        <div class="desc" style="margin-top:6px" id="cpulModeDesc">「仅游戏」只在游戏处于前台时满频，切到后台 15 秒后自动收回；每个游戏可在「游戏记录」里单独设温度阈值。「指定应用」只在勾选的应用处于前台时生效。</div>
+        <div class="desc" style="margin-top:6px" id="cpulModeDesc">「仅游戏」：系统识别到的游戏，或你在下面勾选的应用，在前台时满频；切到后台 15 秒后收回，每个游戏可在「游戏记录」里单独设温度阈值。「指定应用」：只认勾选的应用（不启用系统游戏识别）。系统认不出游戏时，把它勾进指定应用即可在「仅游戏」模式下兜底。</div>
         <div id="cpulAppsWrap" style="display:none;margin-top:8px">
           <button id="cpulPickApps" style="padding:8px 14px">选择应用…</button>
           <span class="mini" style="border:none;padding:0;display:inline-block" id="cpulAppsSum">未选择</span>
@@ -1264,7 +1264,7 @@ async function openAppPicker() {
   wrap.innerHTML = "";
   const holder = document.createElement("div");
   holder.id = "fnHolder";
-  holder.innerHTML = '<div class="mini" style="border:none">勾选需要满频的应用（可多选）。保存后仅当勾选的应用处于前台时解除上限。</div>';
+  holder.innerHTML = '<div class="mini" style="border:none">勾选需要满频的应用（可多选）。「指定应用」模式只认勾选的应用；「仅游戏」模式下它作兜底——系统认不出游戏时，勾选的应用在前台也会满频。</div>';
 
   // 搜索框（155 个应用，方便找）
   const search = document.createElement("input");
@@ -1316,10 +1316,12 @@ async function openAppPicker() {
   document.getElementById("appPickSave").addEventListener("click", async () => {
     cpulApps = [...chosen].sort();
     try { localStorage.setItem("cpul.apps", JSON.stringify(cpulApps)); } catch (e) {}
-    // 关键：保存选择 = 直接切到「指定应用」模式并写入设备生效（不再要求用户另点「保存并开启」）
-    cpulMode = "apps";
+    // 「全局」没有"游戏前台"的概念，保存选择时切到「指定应用」；
+    // 「仅游戏 / 指定应用」保持当前模式 —— 仅游戏模式会把勾选的应用当作兜底。
+    const mode = cpulMode === "global" ? "apps" : cpulMode;
+    cpulMode = mode;
     cpulSyncModeTab();
-    try { await cpulWriteConf("apps"); }
+    try { await cpulWriteConf(mode); }
     catch (e) { endLoad(false, "失败：" + (e && e.message ? e.message : e)); }
   });
 }
@@ -1560,7 +1562,9 @@ async function reset() {
 
 
 /* ---------- 内存 / CPU 面板 ---------- */
-let memDetail = { A: [], C: [], R: [] };
+// shell 单引号转义：脚本路径可能含空格/中文/引号，拼进 exec 命令前必须安全包起来。
+function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+let memDetail = { A: [], C: [], R: [], rules: [] };
 let memTab = "A";
 let memLoaded = false;
 
@@ -1645,11 +1649,18 @@ async function loadMemDetail() {
   // 让「读取中…」先画出来：exec 是同步阻塞的，不先让帧的话
   // 用户点开后会看到一段空白，然后一次性蹦出结果。
   await paint();
-  const r = await exec('sh "' + MODDIR + '/mem.sh" list');
+  // 一次 exec 取两个结果，减少同步阻塞往返；===RULES=== 之后是自动限制规则。
+  const r = await exec('sh "' + MODDIR + '/mem.sh" list; echo "===RULES==="; sh "' + MODDIR + '/mem.sh" rule list 2>/dev/null');
   const lines = (r.stdout || "").split("\n");
-  memDetail = { A: [], C: [], R: [] };
+  memDetail = { A: [], C: [], R: [], rules: [] };
+  let inRules = false;
   for (const ln of lines) {
+    if (ln === "===RULES===") { inRules = true; continue; }
     const p = ln.split("|");
+    if (inRules) {
+      if (p[0] === "RULE" && p.length >= 2) memDetail.rules.push(p.slice(1).join("|"));
+      continue;
+    }
     if (p[0] === "A" && p.length >= 5) memDetail.A.push({ k: p[1], v: +p[2], adj: +p[3], n: +p[4] });
     else if (p[0] === "C" && p.length >= 5) memDetail.C.push({ k: p[1], v: +p[2], n: +p[4] });
     // R|pid|cmdline|cpu千分比 —— root 脚本进程（破解工具/后台脚本常驻烧 CPU 的元凶）。
@@ -1666,7 +1677,10 @@ function renderDetail() {
   const arr = memDetail[memTab];
   { const e=$("detailHint"); if(e) e.textContent =
     memTab === "A" ? (arr.length + " 个应用") : (arr.length + " 个进程（近 1 秒）"); }
-  if (!arr.length) { host.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+  // A 视图始终渲染：即使没有脚本进程/规则，也要露出「手动添加脚本规则」入口。
+  if (!arr.length && memTab !== "A") {
+    host.innerHTML = '<div class="empty">暂无数据</div>'; return;
+  }
 
   host.innerHTML = "";
   for (const it of arr) {
@@ -1717,16 +1731,43 @@ function renderDetail() {
   }
   // root 脚本进程区（R 类）：破解工具/后台脚本 —— 不在 Android 应用框架里，
   // 一键清理（am kill-all）与 force-stop 都管不到，高 CPU 常驻是"莫名发烫"的常见元凶。
-  if (memTab === "A" && memDetail.R && memDetail.R.length) {
+  // 没有脚本进程时也必须显示本区：否则「限制」入口会随列表消失，用户找不到。
+  if (memTab === "A") {
     const hd = document.createElement("div");
     hd.className = "memlabel";
     hd.style.cssText = "margin:12px 0 2px;font-size:13px";
     hd.textContent = "脚本/工具进程（" + memDetail.R.length + "）· 系统后台管理不到";
     const tip = document.createElement("div");
     tip.className = "ps";
-    tip.style.cssText = "color:var(--warn);font-size:11px;margin:2px 0 6px";
-    tip.textContent = "root 启动的脚本或破解工具会绕过一键清理；高 CPU 常驻 = 发烫元凶，可直接停止";
+    tip.style.cssText = memDetail.R.length
+      ? "color:var(--warn);font-size:11px;margin:2px 0 6px"
+      : "color:var(--muted);font-size:11px;margin:2px 0 6px";
+    tip.textContent = memDetail.R.length
+      ? "root 启动的脚本或破解工具会绕过一键清理；高 CPU 常驻 = 发烫元凶，可直接停止或限制"
+      : "当前没有检测到脚本进程。脚本运行时这里会出现「限制」按钮；也可以手动指定要限制的脚本路径。";
     host.appendChild(hd); host.appendChild(tip);
+
+    const tools = document.createElement("div");
+    tools.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;padding:0 0 8px";
+    const add = document.createElement("button");
+    add.className = "sbtn";
+    add.textContent = "手动添加脚本规则";
+    add.addEventListener("click", async () => {
+      const inp = prompt("输入要限制的脚本路径（文件或目录，支持 /data、/sdcard、/storage）\n例如：/data/脚本/某工具", "");
+      if (!inp) return;
+      const p = inp.trim();
+      if (p.charAt(0) !== "/") { toast("路径要以 / 开头"); return; }
+      add.disabled = true; add.textContent = "…";
+      const r = await exec('sh "' + MODDIR + '/mem.sh" rule addpath ' + shq(p));
+      add.disabled = false; add.textContent = "手动添加脚本规则";
+      const out = (r.stdout || "").trim().split("\n");
+      const rule = out.find(x => x.startsWith("RULE="));
+      await loadMemDetail();
+      toast(rule ? ("已保存并立即生效：" + rule.slice(5)) : (out[0] || "已处理"));
+    });
+    tools.appendChild(add);
+    host.appendChild(tools);
+
     for (const it of memDetail.R) {
       const row = document.createElement("div");
       row.className = "prow";
@@ -1738,6 +1779,57 @@ function renderDetail() {
       v.className = "pv";
       v.textContent = (it.v / 10).toFixed(1) + "%";
       v.style.color = it.v >= 500 ? "var(--warn)" : "";
+      const acts = document.createElement("div");
+      acts.style.cssText = "display:flex;gap:6px;flex-shrink:0";
+      // 限制：把脚本进程（及其现有子进程）移进小核 + 最低 CPU 优先级。
+      // 展开两个选项，「只限这次」按当前 PID；「以后自动限制」按脚本路径存规则，
+      // 进程每次启动 PID 都会变，靠路径匹配才能长期生效。
+      const lim = document.createElement("button");
+      lim.className = "sbtn";
+      lim.textContent = "限制";
+      lim.addEventListener("click", () => {
+        const nx = row.nextElementSibling;
+        if (nx && nx.classList && nx.classList.contains("limbar")) return;
+        const bar = document.createElement("div");
+        bar.className = "limbar";
+        bar.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;border-top:1px dashed var(--line)";
+        const once = document.createElement("button");
+        once.className = "sbtn"; once.textContent = "只限这次";
+        once.addEventListener("click", async () => {
+          once.disabled = true; once.textContent = "…";
+          const r = await exec('sh "' + MODDIR + '/mem.sh" limit ' + it.pid);
+          bar.remove();
+          await loadMemDetail();
+          toast((r.stdout || "").trim().split("\n")[0] || "已限制");
+        });
+        const auto = document.createElement("button");
+        auto.className = "sbtn"; auto.textContent = "以后自动限制这个脚本";
+        auto.addEventListener("click", async () => {
+          if (!confirm("以后这个脚本每次启动都会自动限制？\n\n" + it.k +
+            "\n\n方式：只跑小核 + 最低 CPU 优先级，不会杀进程。")) return;
+          auto.disabled = true; auto.textContent = "…";
+          const r = await exec('sh "' + MODDIR + '/mem.sh" rule add ' + it.pid);
+          const out = (r.stdout || "").trim().split("\n");
+          const rule = out.find(x => x.startsWith("RULE="));
+          bar.remove();
+          await loadMemDetail();
+          toast(rule ? ("已自动限制：" + rule.slice(5)) : (out[0] || "已保存规则"));
+        });
+        const unl = document.createElement("button");
+        unl.className = "sbtn"; unl.textContent = "解除限制";
+        unl.addEventListener("click", async () => {
+          unl.disabled = true; unl.textContent = "…";
+          const r = await exec('sh "' + MODDIR + '/mem.sh" unlimit ' + it.pid);
+          bar.remove();
+          await loadMemDetail();
+          toast((r.stdout || "").trim().split("\n")[0] || "已处理");
+        });
+        const cancel = document.createElement("button");
+        cancel.className = "sbtn"; cancel.textContent = "取消";
+        cancel.addEventListener("click", () => bar.remove());
+        bar.appendChild(once); bar.appendChild(auto); bar.appendChild(unl); bar.appendChild(cancel);
+        row.after(bar);
+      });
       const btn = document.createElement("button");
       btn.className = "sbtn";
       btn.textContent = "停止";
@@ -1749,9 +1841,44 @@ function renderDetail() {
         await loadMemOverview();
         toast((r.stdout || "").trim() || "已停止");
       });
-      row.appendChild(b); row.appendChild(v); row.appendChild(btn);
+      acts.appendChild(lim); acts.appendChild(btn);
+      row.appendChild(b); row.appendChild(v); row.appendChild(acts);
       host.appendChild(row);
     }
+  }
+  // 已保存的自动限制规则：启动时按路径匹配。始终显示本区（空时给说明），入口不随数据消失。
+  if (memTab === "A") {
+    const hd = document.createElement("div");
+    hd.className = "memlabel";
+    hd.style.cssText = "margin:12px 0 2px;font-size:13px";
+    hd.textContent = "已保存的自动限制规则（" + memDetail.rules.length + "）";
+    const tip = document.createElement("div");
+    tip.className = "ps";
+    tip.style.cssText = "color:var(--muted);font-size:11px;margin:2px 0 6px";
+    tip.textContent = memDetail.rules.length
+      ? "这些脚本每次启动都会被限制（小核 + 最低优先级）；删除规则会同时恢复这条规则已限制的进程"
+      : "暂无规则。脚本运行时可在上方点「限制 → 以后自动限制这个脚本」，或点「手动添加脚本规则」。";
+    host.appendChild(hd); host.appendChild(tip);
+    memDetail.rules.forEach((path, idx) => {
+      const row = document.createElement("div");
+      row.className = "prow";
+      const b = document.createElement("div");
+      b.className = "pb";
+      b.innerHTML = '<div class="pn" style="font-size:12px;word-break:break-all">' + esc(path) + '</div>' +
+        '<div class="ps">启动时自动限制</div>';
+      const btn = document.createElement("button");
+      btn.className = "sbtn";
+      btn.textContent = "删除";
+      btn.addEventListener("click", async () => {
+        if (!confirm("删除这条自动限制规则？\n\n" + path + "\n\n删除后会恢复这条规则已限制的进程，此后启动的进程不再受限。")) return;
+        btn.disabled = true; btn.textContent = "…";
+        const r = await exec('sh "' + MODDIR + '/mem.sh" rule del ' + (idx + 1));
+        await loadMemDetail();
+        toast((r.stdout || "").trim().split("\n")[0] || "已删除");
+      });
+      row.appendChild(b); row.appendChild(btn);
+      host.appendChild(row);
+    });
   }
 }
 
@@ -1913,7 +2040,7 @@ function cpulSyncModeTab() {
   document.getElementById("cpulModeGame").className = "tab" + (cpulMode === "game" ? " on" : "");
   document.getElementById("cpulModeApps").className = "tab" + (cpulMode === "apps" ? " on" : "");
   const w = document.getElementById("cpulAppsWrap");
-  if (w) w.style.display = cpulMode === "apps" ? "block" : "none";
+  if (w) w.style.display = (cpulMode === "apps" || cpulMode === "game") ? "block" : "none";
   cpulShowAppsSum();
 }
 
@@ -1934,9 +2061,11 @@ function cpulSyncZoneTab() {
 async function loadCpul() {
   const r = await exec(
     'cat "' + MODDIR + '/cpulimit.conf" 2>/dev/null; echo "===CUT==="; ' +
-    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null'
+    'sh "' + MODDIR + '/cpulimit.sh" status 2>/dev/null; echo "===APPS==="; ' +
+    'cat "' + MODDIR + '/cpulimit.apps" 2>/dev/null'
   );
-  const [conf, st] = (r.stdout || "").split("===CUT===");
+  const [conf, rest] = (r.stdout || "").split("===CUT===");
+  const [st, appsRaw] = (rest || "").split("===APPS===");
   const cfg = {};
   for (const raw of (conf || "").split("\n")) {
     const line = raw.split("#")[0];
@@ -1963,6 +2092,14 @@ async function loadCpul() {
     ? cfg.GAME_GPU_CAP : "off";
   cpulSyncSmart();
   cpulMode = (cfg.MODE === "game" || cfg.MODE === "apps") ? cfg.MODE : "global";
+  // 「指定应用」以设备上的 cpulimit.apps 为准（仅游戏模式下它也生效），同步回
+  // localStorage，避免换浏览器/清缓存后界面和设备实际生效的不一致。
+  if (appsRaw !== undefined) {
+    const devApps = (appsRaw || "").split("\n").map(s => s.trim()).filter(Boolean);
+    cpulApps = devApps.slice();
+    cpulAppliedApps = devApps.slice();
+    try { localStorage.setItem("cpul.apps", JSON.stringify(cpulApps)); } catch (e) {}
+  }
   // 只有明确写了 skin-msm-therm 才算「指定机身」；shell_front 是旧配置里的无效选项，迁到自动
   cpulZone = cfg.ZONE === "skin-msm-therm" ? "skin-msm-therm" : "auto";
   cpulAppliedZone = cpulZone;
@@ -2210,7 +2347,9 @@ async function cpulWriteConf(mode) {
   showLoad("正在应用 CPU 上限配置…");
   await paint();
   const conf = cpulSerializeConf(mode);
-  const appsCsv = (mode === "apps" ? cpulApps : []).join("\n");
+  // 勾选列表在所有模式下都保留：「仅游戏」模式用它做系统识别不到时的兜底，
+// 切到其它模式也不清空，避免之后切回来发现选择丢了。
+  const appsCsv = cpulApps.join("\n");
   const r = await exec(
     "echo '" + conf.replace(/'/g, "'\\''") + "' > " + '"' + MODDIR + '/cpulimit.conf.tmp"' +
     " && mv -f " + '"' + MODDIR + '/cpulimit.conf.tmp" "' + MODDIR + '/cpulimit.conf"' +
@@ -2231,14 +2370,16 @@ async function cpulWriteConf(mode) {
     if (!cpulApplyPending) break;
     await new Promise(resolve => setTimeout(resolve, 500));
   }
-  const modeName = mode === "game" ? "仅游戏" : (mode === "apps" ? ("指定应用 " + cpulApps.length + " 个") : "全局");
+  const modeName = mode === "game"
+    ? ("仅游戏" + (cpulApps.length ? "（含 " + cpulApps.length + " 个兜底应用）" : ""))
+    : (mode === "apps" ? ("指定应用 " + cpulApps.length + " 个") : "全局");
   const err = (cpulStatusRaw.match(/^LAST_ERROR=(.+)$/m) || [])[1] || "";
   const pending = cpulApplyPending;
   endLoad(!err && !pending, err ? ("配置已保存，但节点未完全生效：" + err) :
     (pending ? "已保存，等待守护应用" :
       ("已应用（" + (v/1000).toFixed(1) + " / " + (vc/1000).toFixed(1) + "°C · " + modeName + "）")));
   toast(err ? "配置已保存，实际状态请查看面板" : (pending ? "已保存，待应用" : "配置已应用"));
-  if (mode === "apps") openFnPanel("cpul");
+  if (mode === "apps" || mode === "game") openFnPanel("cpul");
 }
 
 async function cpulApplyConf() {
